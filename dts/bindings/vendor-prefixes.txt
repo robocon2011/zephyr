@@ -706,6 +706,7 @@ steelseries	SteelSeries
 stericsson	ST-Ericsson
 summit	Summit microelectronics
 sunchip	Shenzhen Sunchip Technology Co., Ltd
+sunton	Sunton Technology
 sunw	Sun Microsystems, Inc
 supermicro	Super Micro Computer, Inc.
 swir	Sierra Wireless
