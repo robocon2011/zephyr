@@ -1,0 +1,19 @@
+identifier: esp32_2432s028/esp32/procpu
+name: ESP32-2432S028 (Cheap Yellow Display) PROCPU
+type: mcu
+arch: xtensa
+toolchain:
+  - zephyr
+ram: 8192
+supported:
+  - gpio
+  - uart
+  - spi
+  - pwm
+  - watchdog
+  - entropy
+  - input
+  - display
+  - disk
+  - netif:wifi
+vendor: sunton

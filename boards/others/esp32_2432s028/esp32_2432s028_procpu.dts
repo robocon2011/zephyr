@@ -1,0 +1,237 @@
+/*
+ * ESP32-2432S028 (Cheap Yellow Display) - PROCPU devicetree
+ *
+ * Copyright (c) 2026
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Verified peripherals: RGB LED, ILI9341 LCD (SPI2/HSPI), XPT2046 touch
+ * (bitbang SPI), microSD (SPI3/VSPI, FAT), PWM buzzer (LEDC), BOOT button.
+ *
+ * Notes for future maintainers:
+ *  - GPIO numbering >= 32 must use &gpio1 with local index = pin - 32
+ *    (e.g. physical GPIO36 = &gpio1 4). This board's touch lines (32, 33,
+ *    36, 39) all fall in this range; only the touch CLK (GPIO25) stays on
+ *    &gpio0.
+ *  - LCD and touch cannot share a hardware SPI controller: their SCLK/
+ *    MOSI/MISO pins are physically different (LCD: 12/13/14/15 on HSPI;
+ *    touch: 25/32/39/33). Since ESP32 only exposes two general-purpose SPI
+ *    controllers (spi2/spi3) and spi3 is used for the SD card, touch is
+ *    driven via "zephyr,spi-bitbang" over plain GPIOs instead.
+ *  - The LCD has no physical reset pin; do not add reset-gpios.
+ *  - SD host controller compatible is "zephyr,sdhc-spi-slot" (NOT
+ *    "zephyr,sdmmc-spi-slot", which does not exist as a binding).
+ */
+/dts-v1/;
+
+#include <espressif/esp32/esp32_wroom_32ue_n4.dtsi>
+#include "esp32_2432s028-pinctrl.dtsi"
+#include <espressif/partitions_0x1000_amp.dtsi>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/display/panel.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	model = "ESP32-2432S028 (Cheap Yellow Display) PROCPU";
+	compatible = "espressif,esp32";
+
+	aliases {
+		uart-0 = &uart0;
+		sw0 = &button0;
+		watchdog0 = &wdt0;
+		led0 = &led_red;
+		led1 = &led_green;
+		led2 = &led_blue;
+		buzzer0 = &buzzer0;
+	};
+
+	chosen {
+		zephyr,sram = &sram1;
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,display = &ili9341;
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+
+		button0: button_0 {
+			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "BOOT Button";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	/* Discrete RGB LED, active-low. */
+	rgb_led {
+		compatible = "gpio-leds";
+
+		led_red: led_0 {
+			gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
+			label = "RGB Red";
+		};
+
+		led_green: led_1 {
+			gpios = <&gpio0 16 GPIO_ACTIVE_LOW>;
+			label = "RGB Green";
+		};
+
+		led_blue: led_2 {
+			gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
+			label = "RGB Blue";
+		};
+	};
+
+	/* PWM-driven passive buzzer on GPIO26 (JST "SPEAK" connector). */
+	buzzer0: buzzer0 {
+		compatible = "pwm-buzzer";
+		pwms = <&ledc0 0 PWM_HZ(2700) PWM_POLARITY_NORMAL>;
+	};
+
+	/* ILI9341 LCD via MIPI-DBI mode C (4-wire SPI) wrapper. */
+	mipi_dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi2>;
+		dc-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		ili9341: ili9341@0 {
+			compatible = "ilitek,ili9341";
+			reg = <0>;
+			mipi-max-frequency = <20000000>;
+			pixel-format = <PANEL_PIXEL_FORMAT_RGB_565>;
+			rotation = <180>;
+			width = <240>;
+			height = <320>;
+			red-blue-swap;
+		};
+	};
+
+	/* XPT2046 touch controller - bitbang SPI (see header note). */
+	touch_spi: touch-spi {
+		compatible = "zephyr,spi-bitbang";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		clk-gpios  = <&gpio0 25 GPIO_ACTIVE_HIGH>;
+		mosi-gpios = <&gpio1 0  GPIO_ACTIVE_HIGH>; /* physical GPIO32 */
+		miso-gpios = <&gpio1 7  GPIO_ACTIVE_HIGH>; /* physical GPIO39 */
+		cs-gpios   = <&gpio1 1  GPIO_ACTIVE_LOW>;  /* physical GPIO33 */
+
+		xpt2046: xpt2046@0 {
+			compatible = "xptek,xpt2046";
+			reg = <0>;
+			spi-max-frequency = <2000000>;
+			int-gpios = <&gpio1 4 GPIO_ACTIVE_LOW>; /* physical GPIO36 */
+
+			touchscreen-size-x = <240>;
+			touchscreen-size-y = <320>;
+			min-x = <0>;
+			min-y = <0>;
+			max-x = <4095>;
+			max-y = <4095>;
+		};
+	};
+
+	/* microSD card automount. */
+	fstab {
+		compatible = "zephyr,fstab";
+
+		ffs_sd: ffs_sd {
+			compatible = "zephyr,fstab,fatfs";
+			mount-point = "/SD:";
+			automount;
+			disk-access;
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-names = "default";
+};
+
+&gpio0 {
+	status = "okay";
+
+	/* LCD backlight, held high permanently via gpio-hog. */
+	lcd_backlight: lcd-backlight {
+		gpio-hog;
+		gpios = <21 GPIO_ACTIVE_HIGH>;
+		output-high;
+	};
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+/* HSPI - dedicated to the LCD only. */
+&spi2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim2_default>;
+	pinctrl-names = "default";
+};
+
+/* VSPI - dedicated to the microSD card only. */
+&spi3 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim3_default>;
+	pinctrl-names = "default";
+
+	sdhc_spi: sdhc@0 {
+		compatible = "zephyr,sdhc-spi-slot";
+		reg = <0>;
+		status = "okay";
+		spi-max-frequency = <24000000>;
+
+		mmc {
+			compatible = "zephyr,sdmmc-disk";
+			disk-name = "SD";
+			status = "okay";
+		};
+	};
+};
+
+/* LEDC channel 0 -> buzzer on GPIO26. */
+&ledc0 {
+	pinctrl-0 = <&ledc0_default>;
+	pinctrl-names = "default";
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel0@0 {
+		reg = <0x0>;
+		timer = <0>;
+	};
+};
+
+&trng0 {
+	status = "okay";
+};
+
+&timer0 {
+	status = "disabled";
+};
+
+&timer1 {
+	status = "disabled";
+};
+
+&timer2 {
+	status = "disabled";
+};
+
+&timer3 {
+	status = "disabled";
+};

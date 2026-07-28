@@ -1,0 +1,57 @@
+/*
+ * Copyright (c) 2026
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp32-pinctrl.h>
+
+&pinctrl {
+	uart0_default: uart0_default {
+		group1 {
+			pinmux = <UART0_TX_GPIO1>;
+			output-high;
+		};
+
+		group2 {
+			pinmux = <UART0_RX_GPIO3>;
+			bias-pull-up;
+		};
+	};
+
+	/* HSPI - dedicated to the ILI9341 LCD */
+	spim2_default: spim2_default {
+		group1 {
+			pinmux = <SPIM2_MISO_GPIO12>,
+				 <SPIM2_SCLK_GPIO14>,
+				 <SPIM2_CSEL_GPIO15>;
+		};
+
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO13>;
+			output-low;
+		};
+	};
+
+	/* VSPI - dedicated to the microSD card slot */
+	spim3_default: spim3_default {
+		group1 {
+			pinmux = <SPIM3_MISO_GPIO19>,
+				 <SPIM3_SCLK_GPIO18>,
+				 <SPIM3_CSEL_GPIO5>;
+		};
+
+		group2 {
+			pinmux = <SPIM3_MOSI_GPIO23>;
+			output-low;
+		};
+	};
+
+	/* LEDC channel 0 - drives the piezo buzzer on GPIO26 */
+	ledc0_default: ledc0_default {
+		group1 {
+			pinmux = <LEDC_CH0_GPIO26>;
+			output-enable;
+		};
+	};
+};

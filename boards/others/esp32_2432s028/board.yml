@@ -1,0 +1,6 @@
+board:
+  name: esp32_2432s028
+  full_name: ESP32-2432S028 (Cheap Yellow Display)
+  vendor: sunton
+  socs:
+  - name: esp32
