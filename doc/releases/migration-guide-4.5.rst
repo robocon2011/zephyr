@@ -519,6 +519,34 @@ NXP
   ``zephyr,system-timer`` chosen property, so boards that added the overlay
   described in the Zephyr 4.4 migration guide can remove it.
 
+* The i.MX RT118x series DTSI files were moved from ``dts/arm/nxp/imxrt/`` into
+  the series-specific subdirectory ``dts/arm/nxp/imxrt/rt118x/``, and boards now
+  include a single part-core composer file ``nxp_rt118<part>_cm<core>.dtsi``
+  instead of the series-core file plus a separate part overlay. Out-of-tree
+  boards must update their devicetree includes accordingly (:github:`110228`).
+
+  Example for a part that previously needed the series file plus a part
+  overlay:
+
+  .. code-block:: dts
+
+    /* Before */
+    #include <nxp/imxrt/nxp_rt118x_cm7.dtsi>
+    #include <nxp/imxrt/nxp_rt1186.dtsi>
+
+    /* After */
+    #include <nxp/imxrt/rt118x/nxp_rt1186_cm7.dtsi>
+
+  Example for a part that previously used the series file directly:
+
+  .. code-block:: dts
+
+    /* Before */
+    #include <nxp/imxrt/nxp_rt118x_cm33.dtsi>
+
+    /* After */
+    #include <nxp/imxrt/rt118x/nxp_rt1189_cm33.dtsi>
+
 PWM
 ===
 
@@ -708,6 +736,9 @@ USB
   renamed to :dtcompatible:`espressif,esp32-usb-otg-fs`. The internal PHY D+/D- pad numbers are
   now provided through the ``phy-dp-pin`` and ``phy-dm-pin`` properties. Out-of-tree devicetrees
   using the old compatible must update the node compatible and add the two pin properties.
+* The ``clock-names`` property is now required on :dtcompatible:`st,stm32-usbphyc` nodes.
+  A default value is provided at SoC DTSI level but *might* need to be overridden by board DTS.
+  (:github:`112477`)
 
 * The USB host controller API struct ``uhc_api`` got renamed to :c:struct:`uhc_driver_api`.
   It now also uses :c:macro:`DEVICE_API`. Out-of-tree USB host controller drivers must rename
@@ -740,6 +771,12 @@ WiFi
   removed in favor of the generic :kconfig:option:`CONFIG_WIFI_STA_AUTO_DHCPV4`. Applications
   that previously disabled the Espressif-specific option must now disable the generic option
   to retain manual DHCPv4 or static IP behavior after STA connection.
+
+Xen
+===
+
+* With the introduction of zephyr-xenlib, the path to Xen's public headers has changed.
+  Please use ``xen/public/...`` instead of ``zephyr/xen/public/...``.
 
 .. zephyr-keep-sorted-stop
 
@@ -1247,6 +1284,9 @@ Architectures
 
 * ``CONFIG_XTENSA_BACKTRACE_EXCEPTION_DUMP_HOOK`` is removed, since backtrace is now always
   using :c:macro:`EXCEPTION_DUMP` for output.
+
+* SoCs using :kconfig:option:`CONFIG_XTENSA_BACKTRACE` are now expected to implement
+  :c:func:`xtensa_soc_stack_ptr_is_sane` and :c:func:`xtensa_soc_ptr_executable`.
 
 Video
 =====
