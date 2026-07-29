@@ -106,7 +106,6 @@
 			rotation = <180>;
 			width = <240>;
 			height = <320>;
-			red-blue-swap;
 		};
 	};
 
@@ -116,23 +115,28 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		clk-gpios  = <&gpio0 25 GPIO_ACTIVE_HIGH>;
-		mosi-gpios = <&gpio1 0  GPIO_ACTIVE_HIGH>; /* physical GPIO32 */
-		miso-gpios = <&gpio1 7  GPIO_ACTIVE_HIGH>; /* physical GPIO39 */
-		cs-gpios   = <&gpio1 1  GPIO_ACTIVE_LOW>;  /* physical GPIO33 */
+		clk-gpios = <&gpio0 25 GPIO_ACTIVE_HIGH>;
+		mosi-gpios = <&gpio1 0 GPIO_ACTIVE_HIGH>; /* physical GPIO32 */
+		miso-gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>; /* physical GPIO39 */
+		cs-gpios = <&gpio1 1 GPIO_ACTIVE_LOW>;  /* physical GPIO33 */
 
 		xpt2046: xpt2046@0 {
 			compatible = "xptek,xpt2046";
 			reg = <0>;
 			spi-max-frequency = <2000000>;
 			int-gpios = <&gpio1 4 GPIO_ACTIVE_LOW>; /* physical GPIO36 */
+			display = <&ili9341>;
 
 			touchscreen-size-x = <240>;
 			touchscreen-size-y = <320>;
-			min-x = <0>;
-			min-y = <0>;
-			max-x = <4095>;
-			max-y = <4095>;
+			min-x = <200>;
+			max-x = <3700>;
+			min-y = <240>;
+			max-y = <3800>;
+
+			screen-width = <240>;
+			screen-height = <320>;
+			inverted-y;
 		};
 	};
 
@@ -146,6 +150,13 @@
 			automount;
 			disk-access;
 		};
+	};
+};
+
+/ {
+	lvgl_pointer: lvgl-pointer {
+		compatible = "zephyr,lvgl-pointer-input";
+		input = <&xpt2046>;
 	};
 };
 
