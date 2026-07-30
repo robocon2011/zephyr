@@ -105,30 +105,14 @@ static int xpt2046_read_and_cumulate(const struct spi_dt_spec *bus, const struct
 	return 0;
 }
 
-static void xpt2046_release_handler(struct k_work *kw)
+/*
+ * Takes one fresh SPI sample and reports it. Called both right after the
+ * initial press-down edge, and then repeatedly every 10ms via dwork for
+ * as long as the panel remains pressed (see file header note above).
+ */
+static void xpt2046_sample_and_report(struct xpt2046_data *data)
 {
-	struct k_work_delayable *dw = k_work_delayable_from_work(kw);
-	struct xpt2046_data *data = CONTAINER_OF(dw, struct xpt2046_data, dwork);
-	struct xpt2046_config *config = (struct xpt2046_config *)data->dev->config;
-
-	if (!data->pressed) {
-		return;
-	}
-
-	/* Check if touch is still pressed */
-	if (gpio_pin_get_dt(&config->int_gpio) == 0) {
-		data->pressed = false;
-		input_report_key(data->dev, INPUT_BTN_TOUCH, 0, true, K_FOREVER);
-	} else {
-		/* Re-check later */
-		k_work_reschedule(&data->dwork, K_MSEC(10));
-	}
-}
-
-static void xpt2046_work_handler(struct k_work *kw)
-{
-	struct xpt2046_data *data = CONTAINER_OF(kw, struct xpt2046_data, work);
-	struct xpt2046_config *config = (struct xpt2046_config *)data->dev->config;
+	const struct xpt2046_config *config = data->dev->config;
 	int ret;
 
 	const struct spi_buf txb = {.buf = tbuf, .len = sizeof(tbuf)};
@@ -136,7 +120,6 @@ static void xpt2046_work_handler(struct k_work *kw)
 	const struct spi_buf_set tx_bufs = {.buffers = &txb, .count = 1};
 	const struct spi_buf_set rx_bufs = {.buffers = &rxb, .count = 1};
 
-	/* Run number of reads and calculate average */
 	int rounds = config->reads;
 	struct measurement meas = {0};
 
@@ -149,7 +132,7 @@ static void xpt2046_work_handler(struct k_work *kw)
 	meas.y /= rounds;
 	meas.z /= rounds;
 
-	/* Calculate Xp = M * Xt + C using fixed point aritchmetics, where
+	/* Calculate Xp = M * Xt + C using fixed point arithmetic, where
 	 * Xp is the point in screen coordinates, Xt is the touch coordinates.
 	 * Use signed int32_t for calculation to ensure that we cover the roll-over to negative
 	 * values and return zero instead.
@@ -166,12 +149,9 @@ static void xpt2046_work_handler(struct k_work *kw)
 
 	y = (y < 0 ? 0 : y) >> 16;
 
-	bool pressed = meas.z > config->threshold;
+	bool z_ok = meas.z > config->threshold;
 
-	/* Don't send any other than "pressed" events.
-	 * releasing seem to cause just random noise
-	 */
-	if (pressed) {
+	if (z_ok) {
 		LOG_DBG("raw: x=%4u y=%4u ==> x=%4d y=%4d", meas.x, meas.y, x, y);
 
 		input_touchscreen_report_pos(data->dev, x, y, K_FOREVER);
@@ -179,17 +159,62 @@ static void xpt2046_work_handler(struct k_work *kw)
 
 		data->last_x = x;
 		data->last_y = y;
-		data->pressed = pressed;
-
-		/* Ensure that we send released event */
-		k_work_reschedule(&data->dwork, K_MSEC(100));
+		data->pressed = true;
 	}
 
-	ret = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
-	if (ret < 0) {
-		LOG_ERR("Could not set gpio callback");
-		return;
+	/*
+	 * Whether to keep polling is decided from the physical IRQ line
+	 * level, not from this single sample's z threshold: z is an analog
+	 * pressure reading and can dip below threshold for one sample due
+	 * to contact noise even while still genuinely touched, which was
+	 * causing spurious early "release" reports. The IRQ line is a
+	 * digital signal and matches the original driver's (more robust)
+	 * release check.
+	 */
+	/*
+	 * XPT2046's PENIRQ line can be unreliable for a short time right
+	 * after an SPI transaction completes (a known characteristic of
+	 * this chip/clones). The original driver's release check ran in a
+	 * separately-scheduled work item at least 10ms after the SPI
+	 * transaction, which incidentally gave the pin time to settle; this
+	 * function currently checks it immediately, so give it the same
+	 * grace period explicitly.
+	 */
+	k_busy_wait(500);
+
+	if (gpio_pin_get_dt(&config->int_gpio) != 0) {
+		/* Still touched: keep polling every 10ms regardless of
+		 * whether this particular sample cleared the z threshold.
+		 */
+		k_work_reschedule(&data->dwork, K_MSEC(10));
+	} else {
+		/* Genuinely released: send the release event and re-arm the
+		 * edge IRQ so the next press-down triggers xpt2046_isr_handler.
+		 */
+		data->pressed = false;
+		input_report_key(data->dev, INPUT_BTN_TOUCH, 0, true, K_FOREVER);
+
+		ret = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
+		if (ret < 0) {
+			LOG_ERR("Could not set gpio callback");
+		}
 	}
+}
+
+static void xpt2046_poll_handler(struct k_work *kw)
+{
+	struct k_work_delayable *dw = k_work_delayable_from_work(kw);
+	struct xpt2046_data *data = CONTAINER_OF(dw, struct xpt2046_data, dwork);
+
+	xpt2046_sample_and_report(data);
+}
+
+static void xpt2046_work_handler(struct k_work *kw)
+{
+	struct xpt2046_data *data = CONTAINER_OF(kw, struct xpt2046_data, work);
+
+	/* First sample after the initial press-down edge. */
+	xpt2046_sample_and_report(data);
 }
 
 static int xpt2046_init(const struct device *dev)
@@ -205,7 +230,7 @@ static int xpt2046_init(const struct device *dev)
 
 	data->dev = dev;
 	k_work_init(&data->work, xpt2046_work_handler);
-	k_work_init_delayable(&data->dwork, xpt2046_release_handler);
+	k_work_init_delayable(&data->dwork, xpt2046_poll_handler);
 
 	if (!gpio_is_ready_dt(&config->int_gpio)) {
 		LOG_ERR_DEVICE_NOT_READY(config->int_gpio.port);
