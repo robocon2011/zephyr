@@ -20,8 +20,8 @@
 #include <zephyr/bluetooth/l2cap.h>
 #include <zephyr/bluetooth/classic/avdtp.h>
 
-#include "host/hci_core.h"
-#include "host/conn_internal.h"
+#include <host/hci_core.h>
+#include <host/conn_internal.h>
 #include "l2cap_br_internal.h"
 #include "avdtp_internal.h"
 
@@ -387,7 +387,7 @@ static void avdtp_tx_raise(void)
 {
 	if (!sys_slist_is_empty(&avdtp_tx_list)) {
 		LOG_DBG("kick TX");
-		k_work_submit(&avdtp_tx_work);
+		bt_work_submit(&avdtp_tx_work);
 	}
 }
 
@@ -1750,7 +1750,7 @@ static int avdtp_send_cmd(struct bt_avdtp *session, struct net_buf *buf, struct 
 	/* Initialize and start timeout timer */
 	k_work_init_delayable(&session->timeout_work, avdtp_timeout);
 	/* Start timeout work */
-	k_work_reschedule(&session->timeout_work, AVDTP_TIMEOUT);
+	bt_work_reschedule(&session->timeout_work, AVDTP_TIMEOUT);
 
 	return 0;
 }
