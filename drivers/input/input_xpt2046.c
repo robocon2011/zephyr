@@ -64,7 +64,8 @@ struct measurement {
 #define SINGLE_ENDED	      BIT(2)
 #define POWER_OFF	      0
 #define POWER_ON	      0x03
-#define CONVERT_U16(buf, idx) ((uint16_t)((buf[idx] & 0x7f) << 5) | (buf[idx + 1] >> 3))
+#define CONVERT_U16(buf, idx) \
+	((uint16_t)(((buf[idx] & 0x7f) << 5) | ((buf[idx + 1]) >> 3)))
 
 /* Read all Z1, X, Y, Z2 channels using 16 Clocks-per-Conversion mode.
  * See the manual https://www.waveshare.com/w/upload/9/98/XPT2046-EN.pdf for details.
@@ -105,10 +106,6 @@ static int xpt2046_read_and_cumulate(const struct spi_dt_spec *bus, const struct
 
 	return 0;
 }
-
-/* ==========================================================================
- * PHẦN CODE KHÁC BIỆT THEO BOARD
- * ========================================================================== */
 
 #if defined(CONFIG_BOARD_ESP32_2432S028)
 
