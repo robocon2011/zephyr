@@ -27,6 +27,7 @@ struct xpt2046_config {
 	uint16_t screen_size_y;
 	uint16_t reads;
 };
+
 struct xpt2046_data {
 	const struct device *dev;
 	struct gpio_callback int_gpio_cb;
@@ -105,11 +106,12 @@ static int xpt2046_read_and_cumulate(const struct spi_dt_spec *bus, const struct
 	return 0;
 }
 
-/*
- * Takes one fresh SPI sample and reports it. Called both right after the
- * initial press-down edge, and then repeatedly every 10ms via dwork for
- * as long as the panel remains pressed (see file header note above).
- */
+/* ==========================================================================
+ * PHẦN CODE KHÁC BIỆT THEO BOARD
+ * ========================================================================== */
+
+#if defined(CONFIG_BOARD_ESP32_2432S028)
+
 static void xpt2046_sample_and_report(struct xpt2046_data *data)
 {
 	const struct xpt2046_config *config = data->dev->config;
@@ -125,28 +127,22 @@ static void xpt2046_sample_and_report(struct xpt2046_data *data)
 
 	for (int i = 0; i < rounds; i++) {
 		if (xpt2046_read_and_cumulate(&config->bus, &tx_bufs, &rx_bufs, &meas) != 0) {
-			goto reenable_cb;
+			return;
 		}
 	}
 	meas.x /= rounds;
 	meas.y /= rounds;
 	meas.z /= rounds;
 
-	/* Calculate Xp = M * Xt + C using fixed point arithmetic, where
-	 * Xp is the point in screen coordinates, Xt is the touch coordinates.
-	 * Use signed int32_t for calculation to ensure that we cover the roll-over to negative
-	 * values and return zero instead.
-	 */
+	/* Calculate Xp = M * Xt + C using fixed point arithmetic */
 	int32_t mx = (config->screen_size_x << 16) / (config->max_x - config->min_x);
 	int32_t cx = (config->screen_size_x << 16) - mx * config->max_x;
 	int32_t x = mx * meas.x + cx;
-
 	x = (x < 0 ? 0 : x) >> 16;
 
 	int32_t my = (config->screen_size_y << 16) / (config->max_y - config->min_y);
 	int32_t cy = (config->screen_size_y << 16) - my * config->max_y;
 	int32_t y = my * meas.y + cy;
-
 	y = (y < 0 ? 0 : y) >> 16;
 
 	bool z_ok = meas.z > config->threshold;
@@ -162,36 +158,11 @@ static void xpt2046_sample_and_report(struct xpt2046_data *data)
 		data->pressed = true;
 	}
 
-<<<<<<< HEAD
-	/*
-	 * Whether to keep polling is decided from the physical IRQ line
-	 * level, not from this single sample's z threshold: z is an analog
-	 * pressure reading and can dip below threshold for one sample due
-	 * to contact noise even while still genuinely touched, which was
-	 * causing spurious early "release" reports. The IRQ line is a
-	 * digital signal and matches the original driver's (more robust)
-	 * release check.
-	 */
-	/*
-	 * XPT2046's PENIRQ line can be unreliable for a short time right
-	 * after an SPI transaction completes (a known characteristic of
-	 * this chip/clones). The original driver's release check ran in a
-	 * separately-scheduled work item at least 10ms after the SPI
-	 * transaction, which incidentally gave the pin time to settle; this
-	 * function currently checks it immediately, so give it the same
-	 * grace period explicitly.
-	 */
 	k_busy_wait(500);
 
 	if (gpio_pin_get_dt(&config->int_gpio) != 0) {
-		/* Still touched: keep polling every 10ms regardless of
-		 * whether this particular sample cleared the z threshold.
-		 */
 		k_work_reschedule(&data->dwork, K_MSEC(10));
 	} else {
-		/* Genuinely released: send the release event and re-arm the
-		 * edge IRQ so the next press-down triggers xpt2046_isr_handler.
-		 */
 		data->pressed = false;
 		input_report_key(data->dev, INPUT_BTN_TOUCH, 0, true, K_FOREVER);
 
@@ -199,13 +170,6 @@ static void xpt2046_sample_and_report(struct xpt2046_data *data)
 		if (ret < 0) {
 			LOG_ERR("Could not set gpio callback");
 		}
-=======
-reenable_cb:
-	ret = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
-	if (ret < 0) {
-		LOG_ERR("Could not set gpio callback");
-		return;
->>>>>>> 749432eb72d (drivers: input: xpt2046: re-arm gpio callback on read error)
 	}
 }
 
@@ -225,6 +189,89 @@ static void xpt2046_work_handler(struct k_work *kw)
 	xpt2046_sample_and_report(data);
 }
 
+#else
+
+static void xpt2046_release_handler(struct k_work *kw)
+{
+	struct k_work_delayable *dw = k_work_delayable_from_work(kw);
+	struct xpt2046_data *data = CONTAINER_OF(dw, struct xpt2046_data, dwork);
+	struct xpt2046_config *config = (struct xpt2046_config *)data->dev->config;
+
+	if (!data->pressed) {
+		return;
+	}
+
+	/* Check if touch is still pressed */
+	if (gpio_pin_get_dt(&config->int_gpio) == 0) {
+		data->pressed = false;
+		input_report_key(data->dev, INPUT_BTN_TOUCH, 0, true, K_FOREVER);
+	} else {
+		/* Re-check later */
+		k_work_reschedule(&data->dwork, K_MSEC(10));
+	}
+}
+
+static void xpt2046_work_handler(struct k_work *kw)
+{
+	struct xpt2046_data *data = CONTAINER_OF(kw, struct xpt2046_data, work);
+	struct xpt2046_config *config = (struct xpt2046_config *)data->dev->config;
+	int ret;
+
+	const struct spi_buf txb = {.buf = tbuf, .len = sizeof(tbuf)};
+	const struct spi_buf rxb = {.buf = data->rbuf, .len = sizeof(data->rbuf)};
+	const struct spi_buf_set tx_bufs = {.buffers = &txb, .count = 1};
+	const struct spi_buf_set rx_bufs = {.buffers = &rxb, .count = 1};
+
+	/* Run number of reads and calculate average */
+	int rounds = config->reads;
+	struct measurement meas = {0};
+
+	for (int i = 0; i < rounds; i++) {
+		if (xpt2046_read_and_cumulate(&config->bus, &tx_bufs, &rx_bufs, &meas) != 0) {
+			goto reenable_cb;
+		}
+	}
+	meas.x /= rounds;
+	meas.y /= rounds;
+	meas.z /= rounds;
+
+	/* Calculate Xp = M * Xt + C using fixed point aritchmetics */
+	int32_t mx = (config->screen_size_x << 16) / (config->max_x - config->min_x);
+	int32_t cx = (config->screen_size_x << 16) - mx * config->max_x;
+	int32_t x = mx * meas.x + cx;
+	x = (x < 0 ? 0 : x) >> 16;
+
+	int32_t my = (config->screen_size_y << 16) / (config->max_y - config->min_y);
+	int32_t cy = (config->screen_size_y << 16) - my * config->max_y;
+	int32_t y = my * meas.y + cy;
+	y = (y < 0 ? 0 : y) >> 16;
+
+	bool pressed = meas.z > config->threshold;
+
+	/* Don't send any other than "pressed" events. */
+	if (pressed) {
+		LOG_DBG("raw: x=%4u y=%4u ==> x=%4d y=%4d", meas.x, meas.y, x, y);
+
+		input_touchscreen_report_pos(data->dev, x, y, K_FOREVER);
+		input_report_key(data->dev, INPUT_BTN_TOUCH, 1, true, K_FOREVER);
+
+		data->last_x = x;
+		data->last_y = y;
+		data->pressed = pressed;
+
+		/* Ensure that we send released event */
+		k_work_reschedule(&data->dwork, K_MSEC(100));
+	}
+
+reenable_cb:
+	ret = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
+	if (ret < 0) {
+		LOG_ERR("Could not set gpio callback");
+		return;
+	}
+}
+#endif /* CONFIG_BOARD_ESP32_2432S028 */
+
 static int xpt2046_init(const struct device *dev)
 {
 	int r;
@@ -238,7 +285,12 @@ static int xpt2046_init(const struct device *dev)
 
 	data->dev = dev;
 	k_work_init(&data->work, xpt2046_work_handler);
+
+#if defined(CONFIG_BOARD_ESP32_2432S028)
 	k_work_init_delayable(&data->dwork, xpt2046_poll_handler);
+#else
+	k_work_init_delayable(&data->dwork, xpt2046_release_handler);
+#endif
 
 	if (!gpio_is_ready_dt(&config->int_gpio)) {
 		LOG_ERR_DEVICE_NOT_READY(config->int_gpio.port);
