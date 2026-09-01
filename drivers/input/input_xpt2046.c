@@ -125,7 +125,7 @@ static void xpt2046_sample_and_report(struct xpt2046_data *data)
 
 	for (int i = 0; i < rounds; i++) {
 		if (xpt2046_read_and_cumulate(&config->bus, &tx_bufs, &rx_bufs, &meas) != 0) {
-			return;
+			goto reenable_cb;
 		}
 	}
 	meas.x /= rounds;
@@ -162,6 +162,7 @@ static void xpt2046_sample_and_report(struct xpt2046_data *data)
 		data->pressed = true;
 	}
 
+<<<<<<< HEAD
 	/*
 	 * Whether to keep polling is decided from the physical IRQ line
 	 * level, not from this single sample's z threshold: z is an analog
@@ -198,6 +199,13 @@ static void xpt2046_sample_and_report(struct xpt2046_data *data)
 		if (ret < 0) {
 			LOG_ERR("Could not set gpio callback");
 		}
+=======
+reenable_cb:
+	ret = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
+	if (ret < 0) {
+		LOG_ERR("Could not set gpio callback");
+		return;
+>>>>>>> 749432eb72d (drivers: input: xpt2046: re-arm gpio callback on read error)
 	}
 }
 
