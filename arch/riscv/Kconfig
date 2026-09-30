@@ -110,6 +110,15 @@ config RISCV_SMP_IPI_CLINT
 	help
 	  Use CLINT-based IPI implementation.
 
+config RISCV_SMP_IPI_SBI
+	bool "SBI-based IPI"
+	depends on RISCV_S_MODE_EXTERNAL_SBI
+	help
+	  Use the SBI IPI extension (sbi_send_ipi) to raise the supervisor
+	  software interrupt on the target hart. This is the implementation to
+	  use when Zephyr runs in S-mode as a payload of an external SBI such
+	  as OpenSBI, which owns the CLINT.
+
 config RISCV_SMP_IPI_CUSTOM
 	bool "Custom IPI implementation"
 	help
@@ -387,6 +396,7 @@ config GEN_ISR_TABLES
 
 config GEN_SW_ISR_TABLE
 	default y
+	depends on GEN_ISR_TABLES
 	select USE_ISR_WRAPPER
 
 config GEN_IRQ_VECTOR_TABLE
@@ -424,6 +434,15 @@ config RISCV_HART_MASK
 	  For RISC-V systems with HART ID starting from non-zero value,
 	  i.e. 128, 129, ..(0x80, 8x81, ..), this can be configured to 63 (0x7f)
 	  such that we can extract the bits that start from 0.
+
+config RISCV_USER_COUNTER_ACCESS
+	bool
+	depends on RISCV_ISA_EXT_ZICNTR
+	default y if USERSPACE
+	help
+	  Set mcounteren, and scounteren on harts that implement S-mode, so
+	  that user threads can read the Zicntr counters directly instead of
+	  taking an illegal instruction exception.
 
 config RISCV_PMP
 	bool "RISC-V PMP Support"
@@ -822,8 +841,6 @@ config RISCV_S_MODE_INTERNAL_SBI
 
 config RISCV_S_MODE_EXTERNAL_SBI
 	bool "Enter S-mode directly, relying on an external SBI (e.g. OpenSBI)"
-	# TODO: Remove once SMP is fixed with this configuration
-	depends on !SMP
 	help
 	  Skip the in-tree M-mode boot sequence (PMP/medeleg/mideleg/
 	  mcounteren/mtvec setup and the mret drop to S-mode). Use this when

@@ -408,6 +408,12 @@ static int mcux_lpc_syscon_clock_control_on(const struct device *dev,
 		CLOCK_EnableClock(kCLOCK_GateTRNG0);
 	}
 #endif
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(espi0))
+	if ((uint32_t)sub_system == MCUX_ESPI0_CLK) {
+		CLOCK_EnableClock(kCLOCK_GateESPI0);
+	}
+#endif
 #endif
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(lpcmp0))
@@ -443,6 +449,12 @@ static int mcux_lpc_syscon_clock_control_on(const struct device *dev,
 	}
 #endif
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(lpacmp))
+	if ((uint32_t)sub_system == MCUX_LPACMP_CLK) {
+		CLOCK_EnableClock(kCLOCK_GateAonLPACMP);
+	}
+#endif
+
 #if defined(CONFIG_WDT_MCUX_WWDT)
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(wwdt0)) || DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(wwdt))
 	if ((uint32_t)sub_system == MCUX_WWDT0_CLK) {
@@ -475,6 +487,12 @@ static int mcux_lpc_syscon_clock_control_on(const struct device *dev,
 #if DT_HAS_COMPAT_STATUS_OKAY(nxp_powerquad)
 	if ((uint32_t)sub_system == MCUX_POWERQUAD_CLK) {
 		CLOCK_EnableClock(kCLOCK_PowerQuad);
+	}
+#endif
+
+#if DT_HAS_COMPAT_STATUS_OKAY(nxp_aon_lpadc)
+	if ((uint32_t)sub_system == MCUX_AON_LPADC_CLK) {
+		CLOCK_EnableClock(kCLOCK_GateAonLPADC);
 	}
 #endif
 

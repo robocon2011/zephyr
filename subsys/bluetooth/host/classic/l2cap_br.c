@@ -83,6 +83,12 @@ LOG_MODULE_REGISTER(bt_l2cap_br, CONFIG_BT_L2CAP_LOG_LEVEL);
 #define L2CAP_FEAT_CONNLESS_ENABLE_MASK 0
 #endif /* CONFIG_BT_L2CAP_CONNLESS */
 
+#if defined(CONFIG_BT_L2CAP_QOS)
+#define L2CAP_FEAT_QOS_ENABLE_MASK L2CAP_FEAT_QOS_MASK
+#else
+#define L2CAP_FEAT_QOS_ENABLE_MASK 0
+#endif /* CONFIG_BT_L2CAP_QOS */
+
 #if defined(CONFIG_BT_L2CAP_RET)
 #define L2CAP_FEAT_RET_ENABLE_MASK L2CAP_FEAT_RET_MASK
 #else
@@ -127,7 +133,8 @@ LOG_MODULE_REGISTER(bt_l2cap_br, CONFIG_BT_L2CAP_LOG_LEVEL);
 	(L2CAP_FEAT_FIXED_CHAN_MASK | L2CAP_FEAT_RET_ENABLE_MASK |                             \
 	 L2CAP_FEAT_FC_ENABLE_MASK | L2CAP_FEAT_ENH_RET_ENABLE_MASK |                          \
 	 L2CAP_FEAT_STREAM_ENABLE_MASK | L2CAP_FEAT_FCS_ENABLE_MASK |                          \
-	 L2CAP_FEAT_EXT_WIN_SIZE_ENABLE_MASK | L2CAP_FEAT_CONNLESS_ENABLE_MASK)
+	 L2CAP_FEAT_EXT_WIN_SIZE_ENABLE_MASK | L2CAP_FEAT_CONNLESS_ENABLE_MASK |               \
+	 L2CAP_FEAT_QOS_ENABLE_MASK)
 
 enum {
 	/* Connection oriented channels flags */
@@ -4180,6 +4187,7 @@ static uint16_t l2cap_br_conf_opt_qos(struct bt_l2cap_chan *chan, struct net_buf
 
 	if (opt_qos->service_type == BT_L2CAP_QOS_TYPE_GUARANTEED) {
 		result = BT_L2CAP_CONF_UNACCEPT;
+		opt_qos->service_type = BT_L2CAP_QOS_TYPE_BEST_EFFORT;
 		/* Set to default value */
 		opt_qos->flags = 0x00;
 		/* do not care */
@@ -4782,6 +4790,7 @@ static void l2cap_br_conf_req(struct bt_l2cap_br *l2cap, uint8_t ident, uint16_t
 			if (result != BT_L2CAP_CONF_SUCCESS) {
 				goto send_rsp;
 			}
+			l2cap_br_conf_add_opt(rsp_buf, opt);
 			break;
 #if defined(CONFIG_BT_L2CAP_RET_FC)
 		case BT_L2CAP_CONF_OPT_RET_FC:
@@ -5970,6 +5979,13 @@ static int bt_l2cap_br_recv_seg(struct bt_l2cap_br_chan *br_chan, struct net_buf
 		} else {
 			br_chan->_sdu_len = net_buf_pull_le16(seg);
 		}
+
+		if (br_chan->_sdu_len > br_chan->rx.mtu) {
+			LOG_WRN("SDU exceeds MTU");
+			net_buf_drop(&br_chan->_sdu);
+			bt_l2cap_chan_disconnect(&br_chan->chan);
+			return -ESHUTDOWN;
+		}
 	}
 
 	if (!br_chan->_sdu) {
@@ -5982,7 +5998,7 @@ static int bt_l2cap_br_recv_seg(struct bt_l2cap_br_chan *br_chan, struct net_buf
 		return -ESHUTDOWN;
 	}
 
-	if ((br_chan->_sdu->len + seg->len) > br_chan->_sdu_len) {
+	if ((net_buf_frags_len(br_chan->_sdu) + seg->len) > br_chan->_sdu_len) {
 		LOG_ERR("SDU length mismatch");
 		net_buf_drop(&br_chan->_sdu);
 		bt_l2cap_chan_disconnect(&br_chan->chan);
@@ -5999,10 +6015,11 @@ static int bt_l2cap_br_recv_seg(struct bt_l2cap_br_chan *br_chan, struct net_buf
 		return -ESHUTDOWN;
 	}
 
-	LOG_DBG("chan %p len %zu / %zu", br_chan, br_chan->_sdu->len, br_chan->_sdu_len);
+	LOG_DBG("chan %p len %zu / %zu", br_chan, net_buf_frags_len(br_chan->_sdu),
+		br_chan->_sdu_len);
 
 	if ((sar == BT_L2CAP_CONTROL_SAR_UNSEG) || (sar == BT_L2CAP_CONTROL_SAR_END)) {
-		if (br_chan->_sdu->len < br_chan->_sdu_len) {
+		if (net_buf_frags_len(br_chan->_sdu) < br_chan->_sdu_len) {
 			LOG_ERR("SDU length mismatch");
 			net_buf_drop(&br_chan->_sdu);
 			bt_l2cap_chan_disconnect(&br_chan->chan);

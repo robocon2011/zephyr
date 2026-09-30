@@ -80,6 +80,10 @@
 	status = "okay";
 };
 
+&gpio3 {
+	status = "okay";
+};
+
 &gpiote20 {
 	status = "okay";
 };
@@ -107,6 +111,10 @@
 
 /* The GRTC system timer references the LFCLK when it is disabled. */
 &lfclk {
+	status = "okay";
+};
+
+&xo24m {
 	status = "okay";
 };
 

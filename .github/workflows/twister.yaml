@@ -176,6 +176,7 @@ jobs:
       PR_OPTIONS: ' --clobber-output --integration -j 16'
       PUSH_OPTIONS: ' --clobber-output -M --show-footprint --report-filtered -j 16'
       LLVM_TOOLCHAIN_PATH: /usr/lib/llvm-20
+      HEXAGON_TOOLCHAIN_PATH: /opt/toolchains/hexagon/host
     steps:
       - name: Print cloud service information
         run: |
@@ -362,7 +363,7 @@ jobs:
 
       - name: Upload test results to Codecov
         if: ${{ !cancelled() && (github.event_name == 'push') }}
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}

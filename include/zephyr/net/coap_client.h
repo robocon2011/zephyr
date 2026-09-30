@@ -186,12 +186,19 @@ struct coap_client_internal_request {
 	atomic_t in_callback;
 	int unreported_error;
 	struct coap_block_context recv_blk_ctx;
+	uint8_t recv_etag[COAP_ETAG_MAX_LEN];
+	uint8_t recv_etag_len;
 	struct coap_block_context send_blk_ctx;
 	struct coap_pending pending;
 	struct coap_client_request coap_request;
 	struct coap_packet request;
 	uint8_t request_tag[COAP_TOKEN_MAX_LEN];
 	uint8_t send_buf[MAX_COAP_MSG_LEN];
+
+	/* A block-wise receive is in progress, so recv_blk_ctx is valid and
+	 * further requests of this exchange are continuation retrievals.
+	 */
+	bool recv_blockwise;
 
 	/* For GETs with observe option set */
 	bool is_observe;
@@ -302,6 +309,39 @@ void coap_client_cancel_request(struct coap_client *client, struct coap_client_r
  * @return 0 on success, a negative error code otherwise.
  */
 int coap_client_deregister_observe(struct coap_client *client, struct coap_client_request *req);
+
+/**
+ * @brief Refresh (re-register) an ongoing CoAP observation.
+ *
+ * Re-sends the observation's GET with the Observe Option set to 0 (register),
+ * the same token and the same options as the original request (RFC 7641
+ * re-registration). This refreshes the server's observation entry - e.g.
+ * before a Max-Age or a server-side idle timeout expires - without creating a
+ * second observation. The server answers with the current resource state,
+ * delivered on the existing observe callback; the observation otherwise
+ * continues unchanged.
+ *
+ * A failure to build or send the refresh leaves the observation intact (a
+ * later refresh may still succeed), the error is returned and the callback is
+ * not invoked. A confirmable refresh that the server does not acknowledge is
+ * retransmitted like any other confirmable request and, once the retries are
+ * exhausted, ends the observation with -ETIMEDOUT reported to the callback.
+ *
+ * @param client Pointer to the client instance.
+ * @param req Pointer identifying the observation, matched on the same fields
+ *            (method, path, cb, user_data) as the registering coap_client_req().
+ *
+ * @retval 0 Success.
+ * @retval -ENOENT No ongoing observation matches @p req, for instance because
+ *                 it already ended with a timeout or a Reset from the server.
+ * @retval -EBUSY A request is still awaiting its response on the observation,
+ *                such as the registration itself, an earlier confirmable
+ *                refresh or a blockwise notification being retrieved, or the
+ *                function was called from the observation's response callback.
+ *                Retry later.
+ * @retval <0 Other negative error code on failure to build or send the request.
+ */
+int coap_client_reregister_observe(struct coap_client *client, struct coap_client_request *req);
 
 /**
  * @brief Initialise a Block2 option to be added to a request

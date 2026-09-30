@@ -471,7 +471,7 @@ static int init_name_labels(struct net_buf *query)
 	 * + the type and class of an echoed question, which an answer to a
 	 * legacy unicast query appends straight after the name.
 	 */
-	if ((net_buf_max_len(query) - query->len) <
+	if (net_buf_tailroom(query) <
 	    (DNS_MSG_HEADER_SIZE + 2 + DNS_QTYPE_LEN + DNS_QCLASS_LEN)) {
 		return -ENOBUFS;
 	}
@@ -691,10 +691,12 @@ static void send_sd_response(int sock,
 			     struct net_sockaddr *src_addr,
 			     size_t addrlen,
 			     struct net_buf *result,
-			     struct net_if *recv_if)
+			     struct net_if *recv_if,
+			     enum dns_rr_type qtype)
 {
 	struct net_if *iface;
 	net_socklen_t dst_len;
+	size_t result_size;
 	int ret;
 	const struct dns_sd_rec *record;
 	/* filter must be zero-initialized for "wildcard" port */
@@ -787,8 +789,15 @@ static void send_sd_response(int sock,
 		return;
 	}
 
-	if (IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD_SERVICE_TYPE_ENUMERATION)
-		&& dns_sd_is_service_type_enumeration(&filter)) {
+	/* SRV and TXT records exist only on service instance names. */
+	if ((qtype == DNS_RR_TYPE_SRV || qtype == DNS_RR_TYPE_TXT) &&
+	    filter.instance == NULL) {
+		return;
+	}
+
+	if (qtype == DNS_RR_TYPE_PTR &&
+	    IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD_SERVICE_TYPE_ENUMERATION) &&
+	    dns_sd_is_service_type_enumeration(&filter)) {
 
 		/*
 		 * RFC 6763, Section 9
@@ -801,6 +810,11 @@ static void send_sd_response(int sock,
 		dns_sd_create_wildcard_filter(&filter);
 		service_type_enum = true;
 	}
+
+	/* Each response is encoded from result->data over the extracted query,
+	 * so the whole area behind the data pointer is available to it.
+	 */
+	result_size = result->len + net_buf_tailroom(result);
 
 	DNS_SD_COUNT(&rec_num);
 
@@ -827,19 +841,24 @@ static void send_sd_response(int sock,
 			/* Construct the response */
 			if (service_type_enum) {
 				ret = dns_sd_handle_service_type_enum(record, addr4, addr6,
-						result->data, net_buf_max_len(result));
-				if (ret < 0) {
-					NET_DBG("dns_sd_handle_service_type_enum() failed (%d)",
-						ret);
-					continue;
-				}
-			} else {
+						result->data, result_size);
+			} else if (qtype == DNS_RR_TYPE_PTR) {
 				ret = dns_sd_handle_ptr_query(iface, record, addr4, addr6,
-						result->data, net_buf_max_len(result), false);
-				if (ret < 0) {
-					NET_DBG("dns_sd_handle_ptr_query() failed (%d)", ret);
-					continue;
-				}
+							      result->data, result_size, false);
+			} else if (qtype == DNS_RR_TYPE_SRV) {
+				ret = dns_sd_handle_srv_query(iface, record, addr4, addr6,
+							      result->data, result_size);
+			} else if (qtype == DNS_RR_TYPE_TXT) {
+				ret = dns_sd_handle_txt_query(record, addr4, addr6,
+							      result->data, result_size);
+			} else {
+				continue;
+			}
+
+			if (ret < 0) {
+				NET_DBG("Failed to create DNS-SD %s response (%d)",
+					dns_qtype_to_str(qtype), ret);
+				continue;
 			}
 
 			result->len = ret;
@@ -941,9 +960,11 @@ static int dns_read(int sock,
 				hostname, ".local");
 			send_response(sock, family, src_addr, addrlen,
 				      result, qtype, recv_if, dns_id);
-		} else if (IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD)
-			&& qtype == DNS_RR_TYPE_PTR) {
-			send_sd_response(sock, family, src_addr, addrlen, result, recv_if);
+		} else if (IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD) &&
+			   (qtype == DNS_RR_TYPE_PTR || qtype == DNS_RR_TYPE_SRV ||
+			    qtype == DNS_RR_TYPE_TXT)) {
+			send_sd_response(sock, family, src_addr, addrlen, result, recv_if,
+					 qtype);
 		}
 
 	} while (--queries);
@@ -2301,6 +2322,7 @@ static void send_dns_sd_announce(struct net_if *iface, int sock, net_sa_family_t
 	const struct net_in6_addr *addr6 = NULL;
 	const struct dns_sd_rec *record;
 	struct net_buf *answer;
+	size_t answer_size;
 	size_t rec_num;
 	size_t ext_rec_num = external_records_count;
 	int ret;
@@ -2318,6 +2340,11 @@ static void send_dns_sd_announce(struct net_if *iface, int sock, net_sa_family_t
 		return;
 	}
 
+	/* The buffer is reused for every announcement, each encoded from
+	 * answer->data, so the usable size is the capacity of the empty buffer.
+	 */
+	answer_size = net_buf_tailroom(answer);
+
 	DNS_SD_COUNT(&rec_num);
 
 	while (rec_num > 0 || ext_rec_num > 0) {
@@ -2330,7 +2357,7 @@ static void send_dns_sd_announce(struct net_if *iface, int sock, net_sa_family_t
 		}
 
 		ret = dns_sd_handle_ptr_query(iface, record, addr4, addr6, answer->data,
-					      net_buf_max_len(answer), true);
+					      answer_size, true);
 		if (ret < 0) {
 			continue;
 		}

@@ -130,10 +130,11 @@ void shell_remote_cli_cbpprintf(const struct shell *sh, enum shell_vt100_color c
 #ifdef CONFIG_MULTITHREADING
 	err = k_sem_take(&sh_remote->sem, K_MSEC(CONFIG_SHELL_REMOTE_TIMEOUT_MS));
 #else
-	uint32_t t = k_uptime_get_32();
+	uint64_t start = k_uptime_ticks();
+	uint64_t ticks = k_ms_to_ticks_ceil64(CONFIG_SHELL_REMOTE_TIMEOUT_MS);
 
 	while (sh_remote->processed == false) {
-		if (k_uptime_get_32() - t > CONFIG_SHELL_REMOTE_TIMEOUT_MS) {
+		if (k_uptime_ticks() - start > ticks) {
 			err = -ETIMEDOUT;
 			break;
 		}
@@ -173,7 +174,7 @@ static void cmd_get(struct shell_remote_cli *sh_remote, const struct shell_remot
 	}
 
 	syntax_len = strlen(entry->syntax);
-	help_len = entry->help ? strlen(entry->help) : 0;
+	help_len = z_shell_strlen(entry->help);
 	msg_len = offsetof(struct shell_remote_msg_cmd, data) + syntax_len + help_len + 2;
 	LOG_DBG("Command get parent:%s, syntax:%s len:%d, help_len:%d, syntax_len:%d",
 		msg->parent ? msg->parent->syntax : "NULL", entry->syntax, msg_len, help_len,
