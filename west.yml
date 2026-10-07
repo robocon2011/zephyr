@@ -152,7 +152,7 @@ manifest:
       groups:
         - hal
     - name: hal_afbr
-      revision: 1abf6947457380934e27f92508ec5532ddedfc6d
+      revision: effa58cab4a5e5f38d03357c73a65600d7414a67
       path: modules/hal/afbr
       groups:
         - hal
@@ -172,7 +172,7 @@ manifest:
       groups:
         - hal
     - name: hal_espressif
-      revision: 51b02acee0c58f99badb37e522f55915622714c7
+      revision: b16851b3c20e6fad3d2da42ec24a3e82d0b8b444
       path: modules/hal/espressif
       west-commands: west/west-commands.yml
       groups:
@@ -203,7 +203,7 @@ manifest:
       groups:
         - hal
     - name: hal_nordic
-      revision: 58c060befc11f3029212bf4246fd3ca471328861
+      revision: c708b9fe1b7a36090c468374811a6e934b97e54a
       path: modules/hal/nordic
       groups:
         - hal
@@ -235,7 +235,7 @@ manifest:
         - hal
     - name: hal_renesas
       path: modules/hal/renesas
-      revision: a843129f7cb8d048bcb9bcd46bbfebf66b9cbe7c
+      revision: 55d5b9e0341b8dc7612fca4e2f13d6086984709a
       groups:
         - hal
     - name: hal_rpi_pico
@@ -254,7 +254,7 @@ manifest:
       groups:
         - hal
     - name: hal_st
-      revision: e9f0468ade3c06d5e3961e3821543dd67c7ea7f0
+      revision: ce795a9b0de623022c17d2ff394587c024aec850
       path: modules/hal/st
       groups:
         - hal
@@ -295,7 +295,7 @@ manifest:
         - hal
     - name: hostap
       path: modules/lib/hostap
-      revision: 1c541a0913058912376bb832fb753161978c266b
+      revision: 33921a8a77c56bddfe196a11935009cededc3bb3
     - name: liblc3
       revision: 48bbd3eacd36e99a57317a0a4867002e0b09e183
       path: modules/lib/liblc3
@@ -330,7 +330,7 @@ manifest:
       groups:
         - crypto
     - name: mcuboot
-      revision: c85af35b875d244cf91f8ec3caa04168fc7f1ec1
+      revision: a8ffd2c312910cc648219bcb29e04260f7857492
       path: bootloader/mcuboot
       groups:
         - bootloader
@@ -348,7 +348,7 @@ manifest:
       revision: 0f6d088e777a33dd7b54297f137ef10d745c5da8
       path: modules/lib/nanopb
     - name: net-tools
-      revision: 6a7baee0a2bb60d56523277ddee2c4846ea2b62f
+      revision: 96ecb88c982812d48564d319cf7d9a0709c85c70
       path: tools/net-tools
       groups:
         - tools

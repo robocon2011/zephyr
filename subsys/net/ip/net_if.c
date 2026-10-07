@@ -1240,6 +1240,13 @@ static void ipv6_config_defaults_set(struct net_if_ipv6 *ipv6)
 	IF_ENABLED(CONFIG_NET_IPV6_IID_STABLE, (ipv6->iid = NULL));
 	IF_ENABLED(CONFIG_NET_IPV6_IID_STABLE, (ipv6->network_counter = 0));
 	IF_ENABLED(CONFIG_NET_IPV6_PE, (ipv6->desync_factor = 0));
+
+#if defined(CONFIG_NET_IPV6_MLD)
+	ipv6->mld_general_timeout = sys_timepoint_calc(K_FOREVER);
+	/* No MLDv1 querier heard: the timer has expired */
+	ipv6->mld_v1_querier_timeout = sys_timepoint_calc(K_NO_WAIT);
+	ipv6->mld_version = 0U;
+#endif
 }
 
 static void ipv6_prefix_rm_all(struct net_if *iface, struct net_if_ipv6 *ipv6)
@@ -1680,6 +1687,13 @@ static void dad_timeout(struct k_work *work)
 		 * needed in this case as the address is our own one.
 		 */
 		net_ipv6_nbr_rm(iface, &ifaddr->address.in6_addr);
+
+		/* Multicast groups joined so far were reported with the
+		 * unspecified source, RFC 3810 ch 5.2.13.
+		 */
+		if (net_ipv6_is_ll_addr(&ifaddr->address.in6_addr)) {
+			net_ipv6_mld_report_all(iface);
+		}
 	}
 }
 
@@ -2516,6 +2530,13 @@ struct net_if_addr *net_if_ipv6_addr_add(struct net_if *iface,
 
 	net_if_unlock(iface);
 
+	if (ifaddr != NULL && !do_dad && net_ipv6_is_ll_addr(&ifaddr->address.in6_addr)) {
+		/* Usable right away: the multicast groups joined so far were
+		 * reported with the unspecified source, RFC 3810 ch 5.2.13.
+		 */
+		net_ipv6_mld_report_all(iface);
+	}
+
 	if (ifaddr != NULL && join_mcast) {
 		/* The allnodes multicast group is only joined once as
 		 * net_ipv6_mld_join() checks if we have already
@@ -2740,6 +2761,11 @@ struct net_if_mcast_addr *net_if_ipv6_maddr_add(struct net_if *iface,
 		ipv6->mcast[i].is_used = true;
 		ipv6->mcast[i].is_joined = false;
 		ipv6->mcast[i].address.family = NET_AF_INET6;
+#if defined(CONFIG_NET_IPV6_MLD)
+		ipv6->mcast[i].mld_resp_timeout = sys_timepoint_calc(K_FOREVER);
+		ipv6->mcast[i].mld_retx_timeout = sys_timepoint_calc(K_FOREVER);
+		ipv6->mcast[i].mld_retx_left = 0U;
+#endif
 		net_if_maddr_ref_init(&ipv6->mcast[i]);
 
 		memcpy(&ipv6->mcast[i].address.in6_addr, addr, 16);
@@ -4334,6 +4360,14 @@ static void ipv4_config_defaults_set(struct net_if_ipv4 *ipv4)
 	ipv4->ttl = CONFIG_NET_INITIAL_TTL;
 	ipv4->mcast_ttl = CONFIG_NET_INITIAL_MCAST_TTL;
 
+#if defined(CONFIG_NET_IPV4_IGMP)
+	ipv4->igmp_general_timeout = sys_timepoint_calc(K_FOREVER);
+	/* No older version querier heard: the timers have expired */
+	ipv4->igmp_v1_querier_timeout = sys_timepoint_calc(K_NO_WAIT);
+	ipv4->igmp_v2_querier_timeout = sys_timepoint_calc(K_NO_WAIT);
+	ipv4->igmp_version = 0U;
+#endif
+
 	IF_ENABLED(CONFIG_NET_IPV4_ACD, (ipv4->conflict_cnt = 0));
 }
 #else
@@ -5744,6 +5778,11 @@ struct net_if_mcast_addr *net_if_ipv4_maddr_add(struct net_if *iface,
 		maddr->is_joined = false;
 		maddr->address.family = NET_AF_INET;
 		maddr->address.in_addr.s4_addr32[0] = addr->s4_addr32[0];
+#if defined(CONFIG_NET_IPV4_IGMP)
+		maddr->igmp_resp_timeout = sys_timepoint_calc(K_FOREVER);
+		maddr->igmp_retx_timeout = sys_timepoint_calc(K_FOREVER);
+		maddr->igmp_retx_left = 0U;
+#endif
 #if defined(CONFIG_NET_IPV4_IGMPV3)
 		maddr->sources_len = 0;
 #endif

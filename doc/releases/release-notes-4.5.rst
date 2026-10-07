@@ -351,10 +351,10 @@ Deprecated APIs and options
     stays as the extension point for out-of-tree stacks.
 
   * The HCI driver ``setup()`` op, :c:func:`bt_hci_setup`,
-    :c:struct:`bt_hci_setup_params` and :kconfig:option:`CONFIG_BT_HCI_SETUP` have
-    been deprecated. A driver performs its vendor-specific initialization inside
-    :c:member:`bt_hci_driver_api.open` instead, over its own transport. See the
-    migration guide.
+    :c:struct:`bt_hci_setup_params`, :kconfig:option:`CONFIG_BT_HCI_SETUP` and the
+    ``bt_h4_vnd_setup()`` hook of the H:4 driver have been deprecated. A driver performs its
+    vendor-specific initialization inside :c:member:`bt_hci_driver_api.open` instead, over its
+    own transport. See the migration guide.
 
 * Build system
 
@@ -423,6 +423,17 @@ Deprecated APIs and options
 
   * Renamed :c:func:`lora_recv_duty_cycle` to :c:func:`lora_recv_duty_cycle_async`
     to be consistent with the existing sync/async naming convention.
+
+* MCUmgr
+
+  * The :c:type:`smp_transport_get_mtu_fn` type and the ``get_mtu`` member of
+    :c:struct:`smp_transport_api_t` have been deprecated, as the SMP layer does not use them.
+    See the :ref:`migration guide <migration_4.5>` for details.
+
+  * :kconfig:option:`CONFIG_MCUMGR_TRANSPORT_UART_MTU` and
+    :kconfig:option:`CONFIG_MCUMGR_TRANSPORT_SHELL_MTU` have been deprecated, as they only set the
+    value returned by the deprecated ``get_mtu`` callback. See the
+    :ref:`migration guide <migration_4.5>` for details.
 
 * Nordic
 
@@ -609,13 +620,21 @@ New APIs and options
 
     * :c:macro:`BT_HCI_PKT_CMD_DEFINE`
     * :c:macro:`BT_HCI_PKT_CMD_DEFINE_STATIC`
+    * :c:macro:`BT_HCI_PKT_CMD_HDR_SIZE` and :c:macro:`BT_HCI_PKT_CMD_SIZE`
     * :c:func:`bt_hci_pkt_reset_cmd`
     * :c:func:`bt_hci_pkt_push_cmd_hdr`
     * :c:func:`bt_hci_pkt_pull_cmd_complete`
     * :c:func:`bt_hci_pkt_pull_cmd_status`
-    * :c:func:`bt_hci_pkt_parse_cmd_rsp`
+    * :c:func:`bt_hci_pkt_parse_cmd_rsp` and :c:struct:`bt_hci_pkt_cmd_rsp`
+    * :c:struct:`bt_hci_lockstep`
+    * :c:func:`bt_hci_lockstep_init`
+    * :c:func:`bt_hci_lockstep_feed`
     * :c:func:`bt_hci_lockstep_cmd_send_sync`
     * :c:func:`bt_hci_lockstep_reset`
+    * :c:func:`bt_h4_vnd_open` and :kconfig:option:`CONFIG_BT_H4_VND_OPEN`
+    * :c:struct:`bt_hci_driver_data` and :c:struct:`bt_hci_driver_config`
+    * :c:macro:`BT_DT_HCI_DRIVER_CONFIG_GET` and :c:macro:`BT_DT_HCI_DRIVER_CONFIG_INST_GET`
+    * :c:func:`bt_hci_recv` and :c:func:`bt_hci_recv_err`
     * :c:func:`bt_hci_set_public_addr` and :c:func:`bt_hci_get_public_addr`
     * :c:func:`bt_hci_can_close`
 
@@ -1834,11 +1853,32 @@ New Drivers
 
 * Networking
 
+  * MLD
+
+    * Nodes now answer Multicast Address Specific Queries, delay query responses by a random
+      time within the Maximum Response Delay, retransmit the unsolicited report of a join,
+      switch to MLDv1 when an MLDv1 querier is present and drop queries without a link-local
+      source or the Router Alert option, as required by :rfc:`2710` and :rfc:`3810`. No report
+      is sent for the all-nodes group any more, and all groups are reported again once the
+      link-local address of the interface is valid. The number of report transmissions follows
+      the new :kconfig:option:`CONFIG_NET_IPV6_MLD_ROBUSTNESS`, and disabling the new
+      :kconfig:option:`CONFIG_NET_IPV6_MLD_V1_COMPAT` makes the node ignore MLDv1 messages.
+
   * gPTP
 
     * :kconfig:option:`CONFIG_NET_GPTP_STATIC_TIME_RECEIVER` operates the node as a
       statically configured time receiver, so it can synchronize through IEEE 802.1AS
       automotive profile bridges that transmit no Announce messages.
+
+  * IGMP
+
+    * Hosts now answer Group-Specific Queries, delay query responses by a random time within
+      the Max Resp Time, retransmit the unsolicited report of a join and switch to IGMPv1 or
+      IGMPv2 when a querier of that version is present, as required by :rfc:`2236` and :rfc:`3376`.
+      The number of report transmissions follows the new
+      :kconfig:option:`CONFIG_NET_IPV4_IGMP_ROBUSTNESS`. Queries without the IP Router Alert
+      option are ignored when :kconfig:option:`CONFIG_NET_IPV4_IGMP_REQUIRE_ROUTER_ALERT`
+      is enabled.
 
   * :dtcompatible:`st,stm32wba-radio` (:github:`110546`)
 
@@ -2163,6 +2203,16 @@ Libraries / Subsystems
     LoRaWAN 1.0.x Class A directly on top of the LoRa radio driver, without
     the Semtech LoRaMac-node dependency.  Currently supports the EU868 region.
   * :c:member:`lora_modem_config.sync_word`
+
+* Networking
+
+  * Added tracking of local ports bound through offloaded sockets
+    (:kconfig:option:`CONFIG_NET_SOCKETS_OFFLOAD_PORT_TRACKING`). Offloaded
+    sockets bind in the offload engine, outside the ``net_context`` layer, so
+    :c:func:`net_context_port_in_use` could not see them. The socket layer now
+    tracks those bindings and provides ``net_socket_port_in_use()`` to check
+    both native and offloaded ports. mDNS probe port selection and DNS-SD
+    service checks use this new function.
 
 * Management
 

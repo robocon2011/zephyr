@@ -440,15 +440,14 @@ Boards
 * The Silabs Kconfig option ``CONFIG_SOC_SILABS_PM_LOW_INTERRUPT_LATENCY``
   has been renamed to :kconfig:option:`CONFIG_SOC_VENDOR_SILABS_PM_LOW_INTERRUPT_LATENCY`.
 
-* The stm32h573i_dk and stm32h5f5j_dk disco kit are now adopting the mspi controller model.
-  This is the next step of the migration to mspi stm32 support. For both boards, declare the xspi
-  node as ``st,stm32-xspi-controller`` compatible. The stm32h5 device DTS will be updated
-  once all the target boards are changed.
+* The stm32h573i_dk, stm32h5f5j_dk disco kit are now adopting the mspi controller model.
+  This is the next step of the migration to mspi stm32 support.
+  For both boards, declare the xspi node as ``st,stm32-xspi-controller`` compatible.
 
-* The stm32l562e disco kit is now adopting the mspi controller model.
+* The stm32l562e and stm32h735g_disco kit are now adopting the mspi controller model.
   This is the next step of the migration to mspi stm32 support.
   For that board, declare the ospi node as ``st,stm32-ospi-controller`` compatible.
-  The stm32l5 device DTS will be updated once all the target boards are changed.
+  The stm32l5 and stm32h735 devices DTS will be updated once all the target boards are changed.
 
 Device Drivers and Devicetree
 *****************************
@@ -724,6 +723,13 @@ Counter
   ``clocks`` property of the ``clk_32k`` node, instead of ``clock-source`` property in each
   peripheral node (:github:`117709`).
 
+* The NXP RTC counter drivers (:dtcompatible:`nxp,rtc`, :dtcompatible:`nxp,lpc-rtc` and
+  :dtcompatible:`nxp,imx-snvs-rtc`) now return ``-ETIME`` instead of ``-EINVAL`` from
+  :c:func:`counter_set_channel_alarm` when an absolute alarm is set too late, matching the counter
+  API contract. Applications that checked for ``-EINVAL`` on the late-absolute-alarm path must check
+  for ``-ETIME`` instead. An absolute target equal to the current counter value is now also reported
+  as late (``-ETIME``), and the late check no longer applies to relative alarms.
+
 Devicetree
 ==========
 
@@ -810,6 +816,12 @@ Display
   invalidated areas are rounded to the required boundary before reaching the
   driver. (:github:`117765`)
 
+* The ssd16xx display driver now reports :c:enumerator:`PIXEL_FORMAT_MONO01` instead of
+  :c:enumerator:`PIXEL_FORMAT_MONO10`, which matches the controller RAM, where a set bit is a
+  white pixel. LVGL and the character framebuffer draw with the intended colors without any
+  change. Applications that pass their own buffers to :c:func:`display_write` and inverted them
+  to compensate for the former pixel format must drop that inversion.
+
 DMA
 ===
 
@@ -862,6 +874,10 @@ ESPI
     now declares the ``ldn`` (logical device number) property required by
     :dtcompatible:`microchip,xec-espi-host-dev`. Out-of-tree boards that override or add
     host-device child nodes for these SoCs must set ``ldn`` on each.
+
+* The board power node compatible of the :zephyr:code-sample:`espi` sample has been renamed from
+  ``intel-rvp,board-power`` to ``intel,rvp-board-power``. Out-of-tree board overlays for this
+  sample must use the new compatible.
 
 Ethernet
 ========
@@ -2871,6 +2887,19 @@ MCUmgr
   :ref:`mcumgr_os_application_info` command now always reports the board target as hardware
   platform; the pre-4.3 board and board revision output is no longer available.
 
+* :kconfig:option:`CONFIG_MCUMGR_TRANSPORT_UART_MTU` and
+  :kconfig:option:`CONFIG_MCUMGR_TRANSPORT_SHELL_MTU` have been deprecated. They only set the value
+  returned by the deprecated ``get_mtu`` callback, which the SMP layer does not use: serial frames
+  are limited to 127 bytes and the maximum SMP packet size is set by
+  :kconfig:option:`CONFIG_MCUMGR_TRANSPORT_NETBUF_SIZE`. Remove them from configuration files; a
+  deprecation warning is emitted when they are changed from their default.
+
+* The ``get_mtu`` member of :c:struct:`smp_transport_api_t` and the
+  :c:type:`smp_transport_get_mtu_fn` type have been deprecated, as the SMP layer never calls
+  them. Out-of-tree code should stop setting or calling ``get_mtu``. Transports remain
+  responsible for fragmenting outgoing packets in their ``output`` function (see
+  :c:type:`smp_transport_out_fn`).
+
 * The image management client (:kconfig:option:`CONFIG_MCUMGR_GRP_IMG_CLIENT`)
   now supports SHA-512 image digests in addition to SHA-256:
 
@@ -3003,6 +3032,12 @@ lvgl
 
 hal_nxp
 =======
+
+* The ``CONFIG_LV_USE_GPU_NXP_PXP`` Kconfig option has been removed. It only enabled the NXP PXP
+  HAL driver component, which is already enabled by :kconfig:option:`CONFIG_MCUX_PXP`, defaulting
+  to ``y`` when the :dtcompatible:`nxp,pxp` devicetree node is enabled and
+  :kconfig:option:`CONFIG_DISPLAY` is set. Applications that use the PXP driver component
+  without the display subsystem must enable :kconfig:option:`CONFIG_MCUX_PXP` explicitly.
 
 * S32K344: The pinmux header file for this SoC was renamed from ``S32K344-172MQFP-pinctrl.h`` to
   ``S32K344_K324_K314_172HDQFP-pinctrl.h``. Out-of-tree boards must update their include directive accordingly::
