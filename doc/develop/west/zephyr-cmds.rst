@@ -148,9 +148,12 @@ JSON-LD format:
 
 For SPDX 3.0, every document declares conformance to the Core, Software and Simple Licensing
 profiles, and :file:`build.jsonld` additionally declares the :ref:`Build profile
-<west-spdx-build-profile>` that captures how the artifacts were produced.
+<west-spdx-build-profile>` that captures how the artifacts were produced. Element IDs are full
+IRIs under the namespace prefix (``-n``), so the documents of separate builds, such as the images
+of a :ref:`sysbuild <sysbuild>` build, can be combined into one graph as long as each build has its
+own prefix, which the default prefix guarantees.
 
-Every file in the bill-of-materials is scanned so that its hashes (SHA256, SHA1 and MD5) can be
+Every file in the bill-of-materials is scanned so that its hashes (SHA512, SHA256 and SHA1) can be
 recorded, together with its license and copyright.
 
 Both are resolved with the third-party :command:`reuse` tool from the REUSE group, so ``west spdx``
