@@ -591,6 +591,7 @@ Binary Descriptors:
     - include/zephyr/bindesc.h
     - samples/subsys/bindesc/
     - scripts/west_commands/bindesc.py
+    - scripts/west_commands/tests/test_bindesc.py
     - tests/subsys/bindesc/
   labels:
     - "area: Binary Descriptors"
@@ -630,6 +631,7 @@ Bluetooth Audio:
     - jthm-ot
     - alexsven
     - koffes
+    - ciascai
   files:
     - subsys/bluetooth/audio/
     - include/zephyr/bluetooth/audio/
@@ -753,7 +755,7 @@ Bluetooth Host:
     - sjanc
     - Thalley
     - cvinayak
-    - HaavardRei
+    - KyraLengfeld
     - alxelax
     - lylezhu2012
   files:
@@ -849,9 +851,7 @@ Bluetooth Mesh:
     - PavelVPV
     - LingaoM
     - akredalen
-    - HaavardRei
     - omkar3141
-    - KyraLengfeld
     - ludvigsj
   files:
     - doc/services/connectivity/bluetooth/api/mesh/
@@ -1734,6 +1734,8 @@ Documentation Infrastructure:
   status: maintained
   maintainers:
     - nordic-krch
+  collaborators:
+    - danieldegrasse
   files:
     - drivers/clock_control/
     - dts/bindings/clock/
@@ -2061,6 +2063,7 @@ Documentation Infrastructure:
     - net.ethernet
     - sample.drivers.ethernet
     - net.ethernet.build
+    - sample.net.ptp
 
 "Drivers: FPGA":
   status: maintained
@@ -4117,6 +4120,7 @@ MIPS arch:
     - boards/qemu/malta/
   labels:
     - "area: MIPS"
+  tests:
     - arch
     - kernel
 
@@ -5869,6 +5873,7 @@ SPDX Tooling:
     - pdgendt
   files:
     - scripts/pylib/zspdx/
+    - scripts/tests/zspdx/
     - scripts/west_commands/spdx.py
     - tests/application_development/software_bill_of_materials/
   labels:
