@@ -1102,6 +1102,8 @@ static int adv_start_legacy(struct bt_le_ext_adv *adv,
 	adv->sid = BT_GAP_SID_INVALID;
 #endif /* CONFIG_BT_EXT_ADV */
 
+	adv->options = param->options;
+
 	atomic_set_bit_to(adv->flags, BT_ADV_CONNECTABLE, param->options & BT_LE_ADV_OPT_CONN);
 
 	atomic_set_bit_to(adv->flags, BT_ADV_SCANNABLE, scannable);
@@ -2402,7 +2404,8 @@ static void adv_set_terminated(struct bt_le_ext_adv *adv,
 		bt_id_pending_keys_update();
 #endif
 
-		if (adv->cb && adv->cb->sent) {
+		/* Status success means a connection, not the limit, ended advertising */
+		if (evt->status != BT_HCI_ERR_SUCCESS && adv->cb != NULL && adv->cb->sent != NULL) {
 			struct bt_le_ext_adv_sent_info info = {
 				.num_sent = evt->num_completed_ext_adv_evts,
 			};
