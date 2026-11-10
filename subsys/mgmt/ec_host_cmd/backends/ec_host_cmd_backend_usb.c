@@ -105,8 +105,28 @@ struct ec_host_cmd_usb_ctx {
 	struct net_buf *usb_tx_buf;
 	enum ec_host_cmd_usb_state state;
 	atomic_t flags;
+	/* Protects access to state across USB callbacks, handler, and reset_work. */
+	struct k_spinlock state_lock;
 	struct k_work_delayable reset_work;
 };
+
+static inline enum ec_host_cmd_usb_state get_usb_state(struct ec_host_cmd_usb_ctx *ctx)
+{
+	k_spinlock_key_t key = k_spin_lock(&ctx->state_lock);
+	enum ec_host_cmd_usb_state state = ctx->state;
+
+	k_spin_unlock(&ctx->state_lock, key);
+	return state;
+}
+
+static inline void set_usb_state(struct ec_host_cmd_usb_ctx *ctx,
+				 enum ec_host_cmd_usb_state new_state)
+{
+	k_spinlock_key_t key = k_spin_lock(&ctx->state_lock);
+
+	ctx->state = new_state;
+	k_spin_unlock(&ctx->state_lock, key);
+}
 
 static size_t expected_request_len(const struct ec_host_cmd_request_header *header)
 {
@@ -187,7 +207,6 @@ static struct net_buf *ec_host_cmd_buf_alloc_int(const uint8_t ep)
 
 static int ec_host_cmd_signal_event(struct usbd_class_data *const c_data)
 {
-	struct usbd_context *uds_ctx = usbd_class_get_ctx(c_data);
 	struct ec_host_cmd_usb_ctx *ctx = usbd_class_get_private(c_data);
 	struct net_buf *buf;
 	int ret;
@@ -201,7 +220,7 @@ static int ec_host_cmd_signal_event(struct usbd_class_data *const c_data)
 	ret = usbd_ep_enqueue(c_data, buf);
 	if (ret) {
 		LOG_ERR("Failed to enqueue EP IN INT: %d", ret);
-		(void)usbd_ep_buf_free(uds_ctx, buf);
+		net_buf_unref(buf);
 		return ret;
 	}
 	atomic_clear_bit(&ctx->flags, EC_HOST_CMD_EVENT_PENDING);
@@ -227,12 +246,12 @@ static int handle_out_transfer(struct usbd_class_data *const c_data)
 			LOG_ERR("Received incorrect number of bytes, got: %zu, expected: %zu",
 				ctx->rx_ctx->len, expected_len);
 		}
-		ctx->state = USB_EC_HOST_CMD_STATE_PROCESSING;
+		set_usb_state(ctx, USB_EC_HOST_CMD_STATE_PROCESSING);
 		ec_host_cmd_rx_notify();
 	}
 
 	/* Enqueue OUT transfer if we are still receiving. */
-	if (ctx->state == USB_EC_HOST_CMD_STATE_RECEIVING) {
+	if (get_usb_state(ctx) == USB_EC_HOST_CMD_STATE_RECEIVING) {
 		if (!IS_UDC_ALIGNED(ctx->rx_ctx->len)) {
 			LOG_ERR("Received unaligned OUT transfer: %zu", ctx->rx_ctx->len);
 			k_work_reschedule(&ctx->reset_work, K_NO_WAIT);
@@ -286,20 +305,28 @@ static int ec_host_cmd_request(struct usbd_class_data *const c_data, struct net_
 
 		(void)usbd_ep_buf_free(uds_ctx, buf);
 
+		k_spinlock_key_t key = k_spin_lock(&ctx->state_lock);
+
 		if (ctx->state == USB_EC_HOST_CMD_STATE_READY_TO_RX) {
 			if (buf_len < sizeof(struct ec_host_cmd_request_header)) {
+				k_spin_unlock(&ctx->state_lock, key);
 				LOG_ERR("First transfer less than header: %d", buf_len);
 				k_work_schedule(&ctx->reset_work, K_NO_WAIT);
 				return 0;
 			}
 			ctx->state = USB_EC_HOST_CMD_STATE_RECEIVING;
+			k_spin_unlock(&ctx->state_lock, key);
+
 			ctx->rx_ctx->len = 0;
 			k_work_schedule(&ctx->reset_work, K_MSEC(OUT_TRANSFER_TIMEOUT_MS));
-		}
+		} else {
+			enum ec_host_cmd_usb_state state = ctx->state;
 
-		if (ctx->state != USB_EC_HOST_CMD_STATE_RECEIVING) {
-			LOG_ERR("Unexpected transfer in state: %s", state_name[ctx->state]);
-			return 0;
+			k_spin_unlock(&ctx->state_lock, key);
+			if (state != USB_EC_HOST_CMD_STATE_RECEIVING) {
+				LOG_ERR("Unexpected transfer in state: %s", state_name[state]);
+				return 0;
+			}
 		}
 
 		ctx->rx_ctx->len += buf_len;
@@ -327,7 +354,7 @@ static int ec_host_cmd_request(struct usbd_class_data *const c_data, struct net_
 			return 0;
 		}
 
-		ctx->state = USB_EC_HOST_CMD_STATE_READY_TO_RX;
+		set_usb_state(ctx, USB_EC_HOST_CMD_STATE_READY_TO_RX);
 	}
 
 	if (bi->ep == ec_host_cmd_get_in_int_ep(c_data)) {
@@ -369,7 +396,7 @@ static void ec_host_cmd_enable(struct usbd_class_data *const c_data)
 	usb_rx_buf = ec_host_cmd_buf_alloc(ec_host_cmd_get_out_ep(c_data), EP_BULK_SIZE,
 					   ctx->rx_ctx->buf);
 	if (usb_rx_buf == NULL) {
-		ctx->state = USB_EC_HOST_CMD_STATE_DISABLED;
+		set_usb_state(ctx, USB_EC_HOST_CMD_STATE_DISABLED);
 		LOG_ERR("Failed to allocate buf OUT");
 		return;
 	}
@@ -377,12 +404,12 @@ static void ec_host_cmd_enable(struct usbd_class_data *const c_data)
 	/* Enqueue OUT transfer to receive a host command request. */
 	ret = usbd_ep_enqueue(c_data, usb_rx_buf);
 	if (ret) {
-		ctx->state = USB_EC_HOST_CMD_STATE_DISABLED;
+		set_usb_state(ctx, USB_EC_HOST_CMD_STATE_DISABLED);
 		LOG_ERR("Failed to enqueue EP OUT: %d", ret);
 		net_buf_unref(usb_rx_buf);
 		return;
 	}
-	ctx->state = USB_EC_HOST_CMD_STATE_READY_TO_RX;
+	set_usb_state(ctx, USB_EC_HOST_CMD_STATE_READY_TO_RX);
 
 	if (atomic_test_bit(&ctx->flags, EC_HOST_CMD_EVENT_PENDING)) {
 		ec_host_cmd_signal_event(c_data);
@@ -409,14 +436,21 @@ static void ec_host_cmd_suspended(struct usbd_class_data *const c_data)
 static void ec_host_cmd_disable(struct usbd_class_data *const c_data)
 {
 	struct ec_host_cmd_usb_ctx *ctx = usbd_class_get_private(c_data);
+	enum ec_host_cmd_usb_state prev_state;
+	k_spinlock_key_t key;
 
 	atomic_clear_bit(&ctx->flags, EC_HOST_CMD_CLASS_ENABLED);
 
 	k_work_cancel_delayable(&ctx->reset_work);
-	if (ctx->state != USB_EC_HOST_CMD_STATE_READY_TO_RX) {
-		LOG_WRN("Disabled usb in state %s", state_name[ctx->state]);
-	}
+
+	key = k_spin_lock(&ctx->state_lock);
+	prev_state = ctx->state;
 	ctx->state = USB_EC_HOST_CMD_STATE_DISABLED;
+	k_spin_unlock(&ctx->state_lock, key);
+
+	if (prev_state != USB_EC_HOST_CMD_STATE_READY_TO_RX) {
+		LOG_WRN("Disabled usb in state %s", state_name[prev_state]);
+	}
 }
 
 static int ec_host_cmd_usbd_init(struct usbd_class_data *c_data)
@@ -435,14 +469,14 @@ static void ec_host_cmd_reset(struct k_work *work)
 	struct usbd_context *uds_ctx = usbd_class_get_ctx(c_data);
 	int ret;
 
-	LOG_INF("Resetting backend in state %s", state_name[ctx->state]);
+	LOG_INF("Resetting backend in state %s", state_name[get_usb_state(ctx)]);
 
 	if (!ctx->usb_tx_buf) {
 		LOG_ERR("Host Commands not initialized");
 		return;
 	}
 
-	ctx->state = USB_EC_HOST_CMD_STATE_DISABLED;
+	set_usb_state(ctx, USB_EC_HOST_CMD_STATE_DISABLED);
 
 	const uint8_t eps[] = {
 		ec_host_cmd_get_out_ep(c_data),
@@ -482,7 +516,7 @@ static int ec_host_cmd_backend_init(const struct ec_host_cmd_backend *backend,
 	ctx->rx_ctx = rx_ctx;
 	ctx->tx_buf = tx;
 
-	ctx->state = USB_EC_HOST_CMD_STATE_DISABLED;
+	set_usb_state(ctx, USB_EC_HOST_CMD_STATE_DISABLED);
 
 	k_work_init_delayable(&ctx->reset_work, ec_host_cmd_reset);
 
@@ -508,6 +542,7 @@ static int ec_host_cmd_backend_send(const struct ec_host_cmd_backend *backend)
 	struct ec_host_cmd_usb_ctx *ctx = backend->ctx;
 	struct usbd_class_data *const c_data = ctx->c_data;
 	struct net_buf *buf;
+	k_spinlock_key_t key;
 	int ret;
 
 	if (!atomic_test_bit(&ctx->flags, EC_HOST_CMD_CLASS_ENABLED)) {
@@ -515,12 +550,17 @@ static int ec_host_cmd_backend_send(const struct ec_host_cmd_backend *backend)
 		return -EACCES;
 	}
 
+	key = k_spin_lock(&ctx->state_lock);
 	if (ctx->state != USB_EC_HOST_CMD_STATE_PROCESSING) {
-		LOG_ERR("Unexpected state when sending: %s", state_name[ctx->state]);
+		enum ec_host_cmd_usb_state bad_state = ctx->state;
+
+		k_spin_unlock(&ctx->state_lock, key);
+		LOG_ERR("Unexpected state when sending: %s", state_name[bad_state]);
 		return -EACCES;
 	}
 
 	ctx->state = USB_EC_HOST_CMD_STATE_SENDING;
+	k_spin_unlock(&ctx->state_lock, key);
 
 	k_work_schedule(&ctx->reset_work, K_MSEC(IN_TRANSFER_TIMEOUT_MS));
 
@@ -535,7 +575,7 @@ static int ec_host_cmd_backend_send(const struct ec_host_cmd_backend *backend)
 
 	buf = ec_host_cmd_buf_alloc_int(ec_host_cmd_get_in_int_ep(c_data));
 	if (buf == NULL) {
-		LOG_ERR("Failed to allocate buf INT OUT: %d", ret);
+		LOG_ERR("Failed to allocate buf IN INT");
 		k_work_reschedule(&ctx->reset_work, K_NO_WAIT);
 		return -ENOMEM;
 	}
@@ -546,7 +586,7 @@ static int ec_host_cmd_backend_send(const struct ec_host_cmd_backend *backend)
 	ret = usbd_ep_enqueue(c_data, buf);
 	if (ret) {
 		net_buf_unref(buf);
-		LOG_ERR("Failed to enqueue EP INT OUT: %d", ret);
+		LOG_ERR("Failed to enqueue EP IN INT: %d", ret);
 		k_work_reschedule(&ctx->reset_work, K_NO_WAIT);
 		return ret;
 	}

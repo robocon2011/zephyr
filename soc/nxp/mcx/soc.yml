@@ -24,6 +24,7 @@ family:
   - name: mcxc141
   - name: mcxc142
   - name: mcxc242
+  - name: mcxc243
   - name: mcxc444
 - name: mcxe
   series:
@@ -40,6 +41,14 @@ family:
     - name: mcxe316
     - name: mcxe317
     - name: mcxe31b
+- name: mcxe
+  series:
+  - name: mcxe32x
+    socs:
+    - name: mcxe32b
+      cpuclusters:
+      - name: cpu0
+      - name: cpu1
 - name: mcxa
   series:
   - name: mcxa1x3
@@ -126,6 +135,8 @@ runners:
       - qualifiers:
         - mcxc242
       - qualifiers:
+        - mcxc243
+      - qualifiers:
         - mcxc444
       - qualifiers:
         - mcxe245
@@ -141,6 +152,9 @@ runners:
         - mcxe317
       - qualifiers:
         - mcxe31b
+      - qualifiers:
+        - mcxe32b/cpu0
+        - mcxe32b/cpu1
       - qualifiers:
         - mcxa153
       - qualifiers:
@@ -224,6 +238,8 @@ runners:
       - qualifiers:
         - mcxc242
       - qualifiers:
+        - mcxc243
+      - qualifiers:
         - mcxc444
       - qualifiers:
         - mcxe245
@@ -239,6 +255,9 @@ runners:
         - mcxe317
       - qualifiers:
         - mcxe31b
+      - qualifiers:
+        - mcxe32b/cpu0
+        - mcxe32b/cpu1
       - qualifiers:
         - mcxa153
       - qualifiers:

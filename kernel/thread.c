@@ -21,6 +21,7 @@
 #include <timeout_q.h>
 #include <zephyr/internal/syscall_handler.h>
 #include <kernel_internal.h>
+#include <ksmp.h>
 #include <kswap.h>
 #include <zephyr/init.h>
 #include <zephyr/tracing/tracing.h>
@@ -822,20 +823,30 @@ static inline void init_thread_cpu_mask(struct k_thread *thread)
 #endif /* CONFIG_SCHED_CPU_MASK */
 }
 
-/* Attach the thread to its memory domain and inherit caller permissions
- * when K_INHERIT_PERMS is requested.
+/*
+ * Give the new thread everything it inherits from the thread creating it:
+ * the resource pool, the memory domain and, with K_INHERIT_PERMS, the
+ * kernel object permissions. This is the only place where a thread's
+ * attributes are derived from another thread's. A NULL parent (main thread
+ * creation on architectures without a dummy thread) inherits nothing.
  */
-static inline void init_thread_userspace_perms(struct k_thread *thread,
-					       uint32_t options)
+static inline void init_thread_from_parent(struct k_thread *thread, struct k_thread *parent,
+					   uint32_t options)
 {
+	if (parent == NULL) {
+		thread->resource_pool = NULL;
+		return;
+	}
+
+	thread->resource_pool = parent->resource_pool;
+
 #ifdef CONFIG_USERSPACE
-	z_mem_domain_init_thread(thread);
+	z_mem_domain_init_thread(thread, parent);
 
 	if ((options & K_INHERIT_PERMS) != 0U) {
-		k_thread_perms_inherit(_current, thread);
+		k_thread_perms_inherit(parent, thread);
 	}
 #else
-	ARG_UNUSED(thread);
 	ARG_UNUSED(options);
 #endif /* CONFIG_USERSPACE */
 }
@@ -848,16 +859,6 @@ static inline void init_thread_deadline(struct k_thread *thread)
 #else
 	ARG_UNUSED(thread);
 #endif /* CONFIG_SCHED_DEADLINE */
-}
-
-/* Initialize the wait queue used to synchronize SMP thread halt/abort. */
-static inline void init_thread_halt_queue(struct k_thread *thread)
-{
-#ifdef CONFIG_SMP
-	z_waitq_init(&thread->halt_queue);
-#else
-	ARG_UNUSED(thread);
-#endif /* CONFIG_SMP */
 }
 
 /* Initialize runtime CPU-usage tracking for the thread. */
@@ -941,23 +942,92 @@ char *z_setup_new_thread(struct k_thread *new_thread,
 	add_thread_to_monitor(new_thread, entry, p1, p2, p3);
 	init_thread_name(new_thread, name);
 	init_thread_cpu_mask(new_thread);
+	init_thread_from_parent(new_thread, _current, options);
 
 	/* _current may be NULL if the dummy thread is not used */
 	if (IS_ENABLED(CONFIG_ARCH_HAS_CUSTOM_SWAP_TO_MAIN) &&
 	    (_current == NULL)) {
-		new_thread->resource_pool = NULL;
 		return stack_ptr;
 	}
 
-	init_thread_userspace_perms(new_thread, options);
 	init_thread_deadline(new_thread);
-	new_thread->resource_pool = _current->resource_pool;
-	init_thread_halt_queue(new_thread);
+	z_smp_halt_queue_init(new_thread);
 	init_thread_usage(new_thread);
 
 	SYS_PORT_TRACING_OBJ_FUNC(k_thread, create, new_thread);
 
 	return stack_ptr;
+}
+
+/*
+ * The exit_thread_*() helpers below mirror the init_thread_*() ones: each
+ * undoes one optional feature's registration and collapses to nothing when
+ * the feature is disabled.
+ */
+
+/* Run the architecture's abort hook. */
+static inline void exit_thread_abort_hook(struct k_thread *thread)
+{
+#ifdef CONFIG_THREAD_ABORT_HOOK
+	thread_abort_hook(thread);
+#else
+	ARG_UNUSED(thread);
+#endif /* CONFIG_THREAD_ABORT_HOOK */
+}
+
+/* Unregister the thread from the object-core framework and its usage stats. */
+static inline void exit_thread_obj_core(struct k_thread *thread)
+{
+#ifdef CONFIG_OBJ_CORE_THREAD
+#ifdef CONFIG_OBJ_CORE_STATS_THREAD
+	k_obj_core_stats_deregister(K_OBJ_CORE(thread));
+#endif /* CONFIG_OBJ_CORE_STATS_THREAD */
+	k_obj_core_unlink(K_OBJ_CORE(thread));
+#else
+	ARG_UNUSED(thread);
+#endif /* CONFIG_OBJ_CORE_THREAD */
+}
+
+/*
+ * Leave the memory domain, drop every kernel object permission the thread
+ * held and retire the thread and stack kernel objects.
+ */
+static inline void exit_thread_userspace(struct k_thread *thread)
+{
+#ifdef CONFIG_USERSPACE
+	z_mem_domain_exit_thread(thread);
+	k_thread_perms_all_clear(thread);
+	k_object_uninit(thread->stack_obj);
+	k_object_uninit(thread);
+#else
+	ARG_UNUSED(thread);
+#endif /* CONFIG_USERSPACE */
+}
+
+/* Perform, or defer, the cleanup that needs the thread to have stopped. */
+static inline void exit_thread_abort_cleanup(struct k_thread *thread)
+{
+#ifdef CONFIG_THREAD_ABORT_NEED_CLEANUP
+	k_thread_abort_cleanup(thread);
+#else
+	ARG_UNUSED(thread);
+#endif /* CONFIG_THREAD_ABORT_NEED_CLEANUP */
+}
+
+/*
+ * Release everything a thread registered with the kernel while it was
+ * alive. This is the counterpart of z_setup_new_thread() and the only place
+ * where a dead thread's bookkeeping is undone. Called from the scheduler
+ * with its spinlock held, once the thread is known not to run anywhere and
+ * _current is still the aborting thread if it aborted itself.
+ */
+void z_thread_release(struct k_thread *thread)
+{
+	z_thread_monitor_exit(thread);
+	exit_thread_abort_hook(thread);
+	exit_thread_obj_core(thread);
+	exit_thread_userspace(thread);
+	exit_thread_abort_cleanup(thread);
 }
 
 #ifdef CONFIG_THREAD_RUNTIME_STACK_SAFETY
@@ -1122,15 +1192,7 @@ void z_init_thread_base(struct _thread_base *thread_base, int priority,
 
 	thread_base->sched_locked = 0U;
 
-#ifdef CONFIG_SMP
-	thread_base->is_idle = 0;
-
-	/*
-	 * Pretend that the thread was last executing on CPU0 to prevent
-	 * out-of-bounds memory accesses to the _kernel.cpus[] array.
-	 */
-	thread_base->cpu = 0;
-#endif /* CONFIG_SMP */
+	z_smp_thread_base_init(thread_base);
 
 #ifdef CONFIG_TIMESLICE_PER_THREAD
 	thread_base->slice_ticks = 0;
@@ -1809,7 +1871,7 @@ int z_impl_k_thread_join(struct k_thread *thread, k_timeout_t timeout)
 
 	SYS_PORT_TRACING_OBJ_FUNC_ENTER(k_thread, join, thread, timeout);
 
-	if (z_is_thread_dead(thread)) {
+	if (z_is_thread_dead(thread) && !z_is_thread_halting(thread)) {
 		z_sched_switch_spin(thread);
 		ret = 0;
 	} else if (K_TIMEOUT_EQ(timeout, K_NO_WAIT)) {

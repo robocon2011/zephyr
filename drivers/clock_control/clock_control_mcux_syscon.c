@@ -15,6 +15,55 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(clock_control);
 
+#if defined(CONFIG_COUNTER_MCUX_CTIMER) || defined(CONFIG_PWM_MCUX_CTIMER)
+#if defined(CONFIG_SOC_FAMILY_MCXA) || defined(CONFIG_SOC_FAMILY_MCXL)
+#define MCUX_LPC_SYSCON_CTIMER_GATE(n) kCLOCK_GateCTIMER##n
+#elif defined(CONFIG_SOC_SERIES_LPC55XXX) || defined(CONFIG_SOC_FAMILY_MCXN) ||                    \
+	defined(CONFIG_SOC_SERIES_MCXW2XX)
+#define MCUX_LPC_SYSCON_CTIMER_GATE(n) kCLOCK_Timer##n
+#else
+/* LPC54xxx, RW6xx and the i.MX RT5xx/6xx/7xx parts name the same gate Ct32b. */
+#define MCUX_LPC_SYSCON_CTIMER_GATE(n) kCLOCK_Ct32b##n
+#endif
+
+#define MCUX_LPC_SYSCON_CTIMER_CASE(n)                                                             \
+	case MCUX_CTIMER##n##_CLK:                                                                 \
+		*gate = MCUX_LPC_SYSCON_CTIMER_GATE(n);                                            \
+		return true;
+
+static bool mcux_lpc_syscon_ctimer_gate(uint32_t clock_name, clock_ip_name_t *gate)
+{
+	switch (clock_name) {
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ctimer0))
+		MCUX_LPC_SYSCON_CTIMER_CASE(0)
+#endif
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ctimer1))
+		MCUX_LPC_SYSCON_CTIMER_CASE(1)
+#endif
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ctimer2))
+		MCUX_LPC_SYSCON_CTIMER_CASE(2)
+#endif
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ctimer3))
+		MCUX_LPC_SYSCON_CTIMER_CASE(3)
+#endif
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ctimer4))
+		MCUX_LPC_SYSCON_CTIMER_CASE(4)
+#endif
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ctimer5))
+		MCUX_LPC_SYSCON_CTIMER_CASE(5)
+#endif
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ctimer6))
+		MCUX_LPC_SYSCON_CTIMER_CASE(6)
+#endif
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ctimer7))
+		MCUX_LPC_SYSCON_CTIMER_CASE(7)
+#endif
+	}
+
+	return false;
+}
+#endif /* CONFIG_COUNTER_MCUX_CTIMER || CONFIG_PWM_MCUX_CTIMER */
+
 static int mcux_lpc_syscon_clock_control_on(const struct device *dev,
 					    clock_control_subsys_t sub_system)
 {
@@ -348,6 +397,12 @@ static int mcux_lpc_syscon_clock_control_on(const struct device *dev,
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(tsi0))
 	if ((uint32_t)sub_system == MCUX_TSI_CLK) {
 #if defined(CONFIG_SOC_FAMILY_MCXA)
+		/* TSI0's clock mux resets to "NONE" on MCXA; without an explicit
+		 * attach, TSI_SelfCapCalibrate() hangs forever waiting for a
+		 * scan-complete flag that never comes.
+		 */
+		CLOCK_AttachClk(kFRO_HF_DIV_to_TSI0);
+		CLOCK_SetClockDiv(kCLOCK_DivTSI0, 10);
 		CLOCK_EnableClock(kCLOCK_GateTSI0);
 #else
 		CLOCK_EnableClock(kCLOCK_Tsi);
@@ -496,12 +551,59 @@ static int mcux_lpc_syscon_clock_control_on(const struct device *dev,
 	}
 #endif
 
+#if defined(CONFIG_COUNTER_MCUX_CTIMER) || defined(CONFIG_PWM_MCUX_CTIMER)
+	{
+		clock_ip_name_t gate;
+
+		if (mcux_lpc_syscon_ctimer_gate((uint32_t)sub_system, &gate)) {
+			CLOCK_EnableClock(gate);
+		}
+	}
+#endif
+
 	return 0;
 }
 
 static int mcux_lpc_syscon_clock_control_off(const struct device *dev,
 					     clock_control_subsys_t sub_system)
 {
+#if defined(CONFIG_COUNTER_NXP_MRT)
+	if ((uint32_t)sub_system == MCUX_MRT_CLK) {
+#if defined(CONFIG_SOC_FAMILY_LPC) || defined(CONFIG_SOC_SERIES_RW6XX) ||                          \
+	defined(CONFIG_SOC_FAMILY_MCXN) || defined(CONFIG_SOC_SERIES_MCXW2XX)
+		CLOCK_DisableClock(kCLOCK_Mrt);
+#elif defined(CONFIG_SOC_FAMILY_NXP_IMXRT)
+		CLOCK_DisableClock(kCLOCK_Mrt0);
+#endif
+	}
+#if defined(CONFIG_SOC_SERIES_RW6XX)
+	if ((uint32_t)sub_system == MCUX_FREEMRT_CLK) {
+		CLOCK_DisableClock(kCLOCK_FreeMrt);
+	}
+#endif
+#endif /* defined(CONFIG_COUNTER_NXP_MRT) */
+
+#if defined(CONFIG_SOC_FAMILY_MCXA) || defined(CONFIG_SOC_FAMILY_MCXN) || \
+	defined(CONFIG_SOC_FAMILY_MCXL) || defined(CONFIG_SOC_SERIES_IMXRT7XX)
+	if ((uint32_t)sub_system == MCUX_FREQME_CLK) {
+#if defined(CONFIG_SOC_FAMILY_MCXA) || defined(CONFIG_SOC_FAMILY_MCXL)
+		CLOCK_DisableClock(kCLOCK_GateFREQME);
+#elif defined(CONFIG_SOC_FAMILY_MCXN)
+		CLOCK_DisableClock(kCLOCK_Freqme);
+#else /* CONFIG_SOC_SERIES_IMXRT7XX */
+		CLOCK_DisableClock(kCLOCK_Freqme0);
+#endif
+	}
+#endif
+
+#if defined(CONFIG_SOC_SERIES_IMXRT6XX) || \
+	defined(CONFIG_SOC_SERIES_IMXRT5XX) || \
+	defined(CONFIG_SOC_SERIES_RW6XX)
+	if ((uint32_t)sub_system == MCUX_FREQME_CLK) {
+		CLOCK_DisableClock(kCLOCK_Freqme);
+	}
+#endif
+
 #if defined(CONFIG_EQDC_MCUX)
 	if ((uint32_t)sub_system == MCUX_EQDC_CLK ||
 	    (uint32_t)sub_system == MCUX_EQDC0_CLK) {
@@ -513,6 +615,57 @@ static int mcux_lpc_syscon_clock_control_off(const struct device *dev,
 	}
 #endif /* FSL_FEATURE_SOC_EQDC_COUNT > 1 */
 #endif
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(opamp0), okay)
+	if ((uint32_t)sub_system == MCUX_OPAMP0_CLK) {
+#if defined(CONFIG_SOC_FAMILY_MCXA)
+		CLOCK_DisableClock(kCLOCK_GateOPAMP0);
+#else
+		CLOCK_DisableClock(kCLOCK_Opamp0);
+#endif
+	}
+#endif
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(opamp1), okay)
+	if ((uint32_t)sub_system == MCUX_OPAMP1_CLK) {
+#if defined(CONFIG_SOC_FAMILY_MCXA)
+		CLOCK_DisableClock(kCLOCK_GateOPAMP1);
+#else
+		CLOCK_DisableClock(kCLOCK_Opamp1);
+#endif
+	}
+#endif
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(opamp2), okay)
+	if ((uint32_t)sub_system == MCUX_OPAMP2_CLK) {
+#if defined(CONFIG_SOC_FAMILY_MCXA)
+		CLOCK_DisableClock(kCLOCK_GateOPAMP2);
+#else
+		CLOCK_DisableClock(kCLOCK_Opamp2);
+#endif
+	}
+#endif
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(opamp3), okay)
+	if ((uint32_t)sub_system == MCUX_OPAMP3_CLK) {
+#if defined(CONFIG_SOC_FAMILY_MCXA)
+		CLOCK_DisableClock(kCLOCK_GateOPAMP3);
+#else
+		CLOCK_DisableClock(kCLOCK_Opamp3);
+#endif
+	}
+#endif
+
+#if defined(CONFIG_COUNTER_MCUX_CTIMER) || defined(CONFIG_PWM_MCUX_CTIMER)
+	{
+		clock_ip_name_t gate;
+
+		if (mcux_lpc_syscon_ctimer_gate((uint32_t)sub_system, &gate)) {
+			CLOCK_DisableClock(gate);
+		}
+	}
+#endif
+
 	return 0;
 }
 
@@ -1088,6 +1241,8 @@ static int mcux_lpc_syscon_clock_control_get_subsys_rate(const struct device *de
 		*rate = CLOCK_GetWwdt0ClkFreq();
 #elif defined(CONFIG_SOC_FAMILY_MCXA) || defined(CONFIG_SOC_FAMILY_MCXL)
 		*rate = CLOCK_GetWwdtClkFreq();
+#elif defined(CONFIG_SOC_SERIES_LPC54XXX)
+		*rate = CLOCK_GetWdtOscFreq();
 #else
 		*rate = CLOCK_GetWdtClkFreq();
 #endif

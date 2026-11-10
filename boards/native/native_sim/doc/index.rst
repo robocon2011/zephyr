@@ -457,12 +457,9 @@ Here are more details on the peripherals that are currently provided with this b
   Both can also be overridden from the command line with the ``--wifi-if=<name>``
   and ``--wifi-mac-addr=<mac>`` options.
 
-  64-bit ``native_sim`` (``native_sim/native/64``) is not supported yet, as the
-  hostap sources the driver pulls in do not build cleanly for 64-bit, so the
-  driver can only be built for a 32-bit ``native_sim`` image on a Linux host.
   The build links the host ``libnl``, which has to match the word size of the
-  image, so it requires the 32-bit ``libnl`` development libraries; on a
-  Debian/Ubuntu host:
+  image. The default 32-bit ``native_sim`` target requires the 32-bit ``libnl``
+  development libraries; on a Debian/Ubuntu host:
 
   .. code-block:: console
 
@@ -470,6 +467,13 @@ Here are more details on the peripherals that are currently provided with this b
      $ sudo apt update
      $ sudo apt install gcc-multilib pkg-config libnl-3-dev:i386 libnl-genl-3-dev:i386
      $ export PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig
+
+  For :ref:`64bit native_sim<native_sim32_64>` builds the 64-bit version is
+  needed instead:
+
+  .. code-block:: console
+
+     $ sudo apt install pkg-config libnl-3-dev libnl-genl-3-dev
 
   The simulated radio and the access points it connects to are created on the
   host with the ``net-setup.sh`` script and the ``zwifi`` configuration from the
@@ -702,6 +706,60 @@ Here are more details on the peripherals that are currently provided with this b
 
   SocketCAN support can be enabled by using the :ref:`snippet-socketcan-native-sim`.
 
+**I2C controller**
+  Drives real devices on a host I2C adapter through its Linux i2c-dev node, see
+  :dtcompatible:`zephyr,native-linux-i2c`. The adapter must support plain I2C transfers, not only
+  SMBus ones.
+
+  The bus speed is set on the Linux side, by the adapter's own driver. This Zephyr driver does
+  not apply the given configuration to the adapter: it only stores it, and returns it when
+  :c:func:`i2c_get_config` is called.
+
+  Note the board ``i2c_host`` node is disabled by default, as the adapter number depends on the
+  host, so to use it, you will need an overlay. For example, for ``/dev/i2c-1`` with a sensor at
+  ``0x76``:
+
+  .. code-block:: dts
+
+      &i2c_host {
+        path = "/dev/i2c-1";
+        status = "okay";
+
+        sensor@76 {
+          compatible = "bosch,bme280";
+          reg = <0x76>;
+        };
+      };
+
+  ``--<device>_path=<path>`` overrides the path at run time, where ``<device>`` is the DT node
+  name (``i2c`` for the board node). The ``i2c-dev`` Linux kernel module must be loaded and the
+  node accessible to the user.
+
+  Transfers run on a host thread while simulated time goes on. Their end is seen up to one real
+  time period late, so use a short period (``--rt-period=1e-3``).
+
+**Fuel gauge**
+
+  A fuel gauge driver is available for reading battery properties from a Linux
+  power_supply sysfs device on the host through the Zephyr fuel gauge API. It can
+  be enabled with :kconfig:option:`CONFIG_NATIVE_LINUX_FUEL_GAUGE` and
+  configured with the devicetree binding :dtcompatible:`zephyr,native-linux-fuel-gauge`.
+  A property whose sysfs attribute the battery does not provide is reported as unsupported.
+
+  The ``fuel_gauge0`` node of the board is disabled by default, as the name of the battery depends
+  on the host. For example, for ``/sys/class/power_supply/BAT0/`` you can configure:
+
+  .. code-block:: dts
+
+      &fuel_gauge0 {
+        path = "/sys/class/power_supply/BAT0";
+        status = "okay";
+      };
+
+  The ``--fuel-gauge-path=<path>`` command line option overrides the devicetree path, for
+  example to read a directory holding the attribute files of a fake power supply on a host
+  without a battery. The directory must contain a ``type`` file reading ``Battery``.
+
 **LED device**
   Implements a Zephyr LED device backed by a Linux LED. You configure which
   Linux LED to use by setting the DT ``path`` property to the name of the LED
@@ -825,6 +883,13 @@ Interaction with serial ports can be configured in several different ways:
 * Serial port and baud rate can also be set via command line options ``X_port``
   and ``X_baud`` respectively, where ``X`` is a name of a node. Command line
   options override values from the devicetree.
+* When neither ``serial-port`` nor ``X_port`` names the port, the driver can
+  find a USB serial adapter by vendor and product ID: the ``usb-ids`` property
+  lists ``<vendor-id product-id>`` pairs, tried in order, and the first host tty
+  whose USB device matches is opened. The application exits if none matches.
+* The ``low-latency`` property asks the host tty driver to deliver received
+  data at once instead of after a latency timer, which USB serial adapters such
+  as FTDI ones otherwise wait for.
 * The rest of the configuration options such as number of data and stop bits,
   parity, as well as baud rate can be set at runtime with ``uart_configure``.
 * This driver can emulate an interrupt-driven UART by enabling
@@ -837,7 +902,9 @@ driver.
 
 This driver only supports poll mode and interrupt mode. Async mode is not
 supported.
-It has runtime configuration support, but no line control support.
+It has runtime configuration support. With
+:kconfig:option:`CONFIG_UART_LINE_CTRL`, :c:func:`uart_line_ctrl_set` drives the
+port's DTR and RTS lines.
 
 .. _native_sim_backends:
 

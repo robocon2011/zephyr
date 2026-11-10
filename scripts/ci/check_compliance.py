@@ -342,7 +342,9 @@ class CheckPatch(ComplianceTest):
 
         cmd.extend(['--mailback', '--no-tree', '-'])
         with subprocess.Popen(
-            ('git', 'diff', '--no-ext-diff', COMMIT_RANGE), stdout=subprocess.PIPE, cwd=GIT_TOP
+            ('git', 'diff', '--no-ext-diff', COMMIT_RANGE, '--', ':!*.diff', ':!*.patch'),
+            stdout=subprocess.PIPE,
+            cwd=GIT_TOP,
         ) as diff:
             try:
                 subprocess.run(
@@ -481,6 +483,30 @@ class ClangFormatCheck(ComplianceTest):
                     if patch.is_removed_file:
                         continue
                     self._process_patch_error(file, patch)
+
+
+class FileNameCheck(ComplianceTest):
+    """
+    Check if Kconfig files have wrongly be named overlays
+    """
+
+    name = "FileName"
+    doc = zephyr_doc_detail_builder("/develop/application/index.html#application-configuration")
+
+    def run(self):
+        for file in get_files(filter="d"):
+            file_path = Path(file)
+            if file_path.suffix != '.conf':
+                continue
+
+            if file_path.name.lower().startswith('overlay'):
+                self.fmtd_failure(
+                    "error",
+                    "FileNameDisallowed",
+                    file_path,
+                    0,
+                    desc='Kconfig fragment files are not overlay files',
+                )
 
 
 class StyleCheckMixin:
@@ -789,6 +815,9 @@ class DevicetreeLintingCheck(ComplianceTest):
                 "--outputFormat",
                 "json",
                 "--format",
+                "--enableSortNodesAndProperties",
+                "--sortNodesNodesBy",
+                "address",
                 "--patchFile",
                 temp_patch,
             ]
@@ -1770,6 +1799,7 @@ Missing SoC names or CONFIG_SOC vs soc.yml out of sync:
             ":!/doc/security/vulnerabilities.rst",
             ":!/doc/security/vulnerabilities",
             cwd=GIT_TOP,
+            ignore_non_zero=True,
         )
 
         self_folder = Path(__file__).resolve().parent

@@ -491,6 +491,34 @@ static inline void init_iface(struct net_if *iface)
 }
 
 #if defined(CONFIG_NET_NATIVE)
+#if defined(CONFIG_NET_LOOPBACK_FRAGMENT)
+/* Run only the fragmentation step of the IP send checks, so that a packet
+ * larger than the loopback MTU is fragmented and reassembled like on a real
+ * link. Raw IP sockets bypass the checks as they do on other interfaces.
+ */
+static enum net_verdict loopback_prepare_for_send(struct net_pkt *pkt,
+						  struct net_context *context)
+{
+	if (context != NULL && net_context_get_type(context) == NET_SOCK_RAW) {
+		return NET_OK;
+	}
+
+#if defined(CONFIG_NET_IPV6_FRAGMENT)
+	if (net_pkt_family(pkt) == NET_AF_INET6) {
+		return net_ipv6_prepare_for_send_fragment(pkt);
+	}
+#endif
+
+#if defined(CONFIG_NET_IPV4_FRAGMENT)
+	if (net_pkt_family(pkt) == NET_AF_INET) {
+		return net_ipv4_prepare_for_send_fragment(pkt);
+	}
+#endif
+
+	return NET_OK;
+}
+#endif /* CONFIG_NET_LOOPBACK_FRAGMENT */
+
 enum net_verdict net_if_try_send_data(struct net_if *iface, struct net_pkt *pkt,
 				      k_timeout_t timeout)
 {
@@ -548,6 +576,9 @@ enum net_verdict net_if_try_send_data(struct net_if *iface, struct net_pkt *pkt,
 	 * additional checks, so let the packet through.
 	 */
 	if (net_if_l2(iface) == &NET_L2_GET_NAME(DUMMY)) {
+#if defined(CONFIG_NET_LOOPBACK_FRAGMENT)
+		verdict = loopback_prepare_for_send(pkt, context);
+#endif
 		goto done;
 	}
 #endif
@@ -4740,8 +4771,9 @@ static inline bool is_proper_ipv4_address(struct net_if_addr *addr)
 }
 
 static struct net_in_addr *net_if_ipv4_get_best_match(struct net_if *iface,
-						  const struct net_in_addr *dst,
-						  uint8_t *best_so_far, bool ll)
+						      const struct net_in_addr *dst,
+						      uint8_t *best_so_far, bool ll,
+						      bool allow_loopback)
 {
 	struct net_if_ipv4 *ipv4;
 	struct net_in_addr *src = NULL;
@@ -4766,6 +4798,11 @@ static struct net_in_addr *net_if_ipv4_get_best_match(struct net_if *iface,
 		}
 
 		if (net_ipv4_is_ll_addr(&ipv4->unicast[i].ipv4.address.in_addr) != ll) {
+			continue;
+		}
+
+		if (!allow_loopback &&
+		    net_ipv4_is_addr_loopback(&ipv4->unicast[i].ipv4.address.in_addr)) {
 			continue;
 		}
 
@@ -4834,6 +4871,10 @@ static struct net_in_addr *if_ipv4_get_addr(struct net_if *iface,
 			continue;
 		}
 
+		if (!ll && net_ipv4_is_addr_loopback(&ipv4->unicast[i].ipv4.address.in_addr)) {
+			continue;
+		}
+
 		if (net_ipv4_is_ll_addr(&ipv4->unicast[i].ipv4.address.in_addr)) {
 			if (!ll) {
 				continue;
@@ -4871,9 +4912,18 @@ const struct net_in_addr *net_if_ipv4_select_src_addr(struct net_if *dst_iface,
 {
 	const struct net_in_addr *src = NULL;
 	uint8_t best_match = 0U;
+	bool allow_loopback;
 
 	if (dst == NULL) {
 		return NULL;
+	}
+
+	/* An unspecified destination is used while binding a wildcard socket. */
+	allow_loopback = net_ipv4_is_addr_loopback(dst) || net_ipv4_is_addr_unspecified(dst);
+
+	/* Allow loopback sources for multicast explicitly scoped to an interface. */
+	if (dst_iface != NULL && net_ipv4_is_addr_mcast(dst)) {
+		allow_loopback = true;
 	}
 
 	if (dst_iface == NULL && !net_ipv4_is_ll_addr(dst)) {
@@ -4884,15 +4934,14 @@ const struct net_in_addr *net_if_ipv4_select_src_addr(struct net_if *dst_iface,
 
 		/* If caller has supplied interface, then use that */
 		if (dst_iface) {
-			src = net_if_ipv4_get_best_match(dst_iface, dst,
-							 &best_match, false);
+			src = net_if_ipv4_get_best_match(dst_iface, dst, &best_match, false,
+							 allow_loopback);
 		} else {
 			STRUCT_SECTION_FOREACH(net_if, iface) {
 				struct net_in_addr *addr;
 
-				addr = net_if_ipv4_get_best_match(iface, dst,
-								  &best_match,
-								  false);
+				addr = net_if_ipv4_get_best_match(iface, dst, &best_match, false,
+								  allow_loopback);
 				if (addr) {
 					src = addr;
 				}
@@ -4906,9 +4955,8 @@ const struct net_in_addr *net_if_ipv4_select_src_addr(struct net_if *dst_iface,
 			struct net_in_addr *addr;
 
 			STRUCT_SECTION_FOREACH(net_if, iface) {
-				addr = net_if_ipv4_get_best_match(iface, dst,
-								  &best_match,
-								  true);
+				addr = net_if_ipv4_get_best_match(iface, dst, &best_match, true,
+								  allow_loopback);
 				if (addr) {
 					src = addr;
 				}
@@ -4918,9 +4966,8 @@ const struct net_in_addr *net_if_ipv4_select_src_addr(struct net_if *dst_iface,
 			 * be used if it has a valid LL address, and there was
 			 * no better match on any other interface.
 			 */
-			addr = net_if_ipv4_get_best_match(net_if_get_default(),
-							  dst, &best_match,
-							  true);
+			addr = net_if_ipv4_get_best_match(net_if_get_default(), dst, &best_match,
+							  true, allow_loopback);
 			if (addr) {
 				src = addr;
 			}
@@ -6783,20 +6830,6 @@ static void rejoin_multicast_groups(struct net_if *iface)
 
 static void notify_iface_up(struct net_if *iface)
 {
-	/* In many places it's assumed that link address was set with
-	 * net_if_set_link_addr(). Better check that now.
-	 */
-	if (IS_ENABLED(CONFIG_NET_L2_CANBUS_RAW) &&
-	    IS_ENABLED(CONFIG_NET_SOCKETS_CAN) &&
-	    (net_if_l2(iface) == &NET_L2_GET_NAME(CANBUS_RAW)))	{
-		/* CAN does not require link address. */
-	} else {
-		if (!net_if_is_offloaded(iface)) {
-			NET_ASSERT(net_if_get_link_addr(iface) != NULL &&
-				   net_if_get_link_addr(iface)->len > 0);
-		}
-	}
-
 	net_if_flag_set(iface, NET_IF_RUNNING);
 	net_mgmt_event_notify(NET_EVENT_IF_UP, iface);
 
@@ -7565,6 +7598,8 @@ void net_if_init(void)
 	net_tc_tx_init();
 
 	STRUCT_SECTION_FOREACH(net_if, iface) {
+
+		NET_ASSERT(iface->if_dev != NULL);
 
 		init_iface(iface);
 

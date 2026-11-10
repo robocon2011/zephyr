@@ -23,7 +23,6 @@
 #include <zephyr/ztest.h>
 
 #if defined(CONFIG_BT_PRIVACY)
-#include <common/rpa.h>
 #include <host/hci_core.h>
 #include <host/id.h>
 #include <host/keys.h>
@@ -666,7 +665,7 @@ static ZTEST(bt_id_public_api, test_reset_irk_updates_key)
 	zassert_ok(bt_id_reset_irk(BT_ID_DEFAULT, old_irk), "Failed to set the old IRK");
 	zassert_ok(bt_le_oob_get_local(BT_ID_DEFAULT, &old_oob), "Failed to get the old RPA");
 	zassert_true(bt_addr_le_is_rpa(&old_oob.addr), "The old address is not an RPA");
-	zassert_true(bt_rpa_irk_matches(old_irk, &old_oob.addr.a),
+	zassert_true(bt_addr_matches_irk(&old_oob.addr.a, old_irk),
 		     "The old RPA does not match the old IRK");
 
 	zassert_ok(bt_id_reset_irk(BT_ID_DEFAULT, supplied_irk), "Failed to set the supplied IRK");
@@ -680,9 +679,9 @@ static ZTEST(bt_id_public_api, test_reset_irk_updates_key)
 
 	zassert_ok(bt_le_oob_get_local(BT_ID_DEFAULT, &new_oob), "Failed to get the new RPA");
 	zassert_true(bt_addr_le_is_rpa(&new_oob.addr), "The new address is not an RPA");
-	zassert_true(bt_rpa_irk_matches(supplied_irk, &new_oob.addr.a),
+	zassert_true(bt_addr_matches_irk(&new_oob.addr.a, supplied_irk),
 		     "The new RPA does not match the supplied IRK");
-	zassert_false(bt_rpa_irk_matches(old_irk, &new_oob.addr.a),
+	zassert_false(bt_addr_matches_irk(&new_oob.addr.a, old_irk),
 		      "The new RPA still matches the old IRK");
 	zassert_false(bt_addr_le_eq(&old_oob.addr, &new_oob.addr),
 		      "The RPA did not change after the IRK reset");
@@ -709,7 +708,7 @@ static ZTEST(bt_id_public_api, test_reset_irk_invalidates_cached_rpa)
 	err = bt_le_ext_adv_get_info(adv, &info);
 	zassert_ok(err, "Failed to get the old advertising set info");
 	bt_addr_le_copy(&old_rpa, info.addr);
-	zassert_true(bt_rpa_irk_matches(old_irk, &old_rpa.a),
+	zassert_true(bt_addr_matches_irk(&old_rpa.a, old_irk),
 		     "The cached RPA does not match the old IRK");
 	zassert_ok(bt_le_ext_adv_delete(adv), "Failed to delete the old advertising set");
 
@@ -719,9 +718,9 @@ static ZTEST(bt_id_public_api, test_reset_irk_invalidates_cached_rpa)
 	err = bt_le_ext_adv_get_info(adv, &info);
 	zassert_ok(err, "Failed to get the new advertising set info");
 	bt_addr_le_copy(&new_rpa, info.addr);
-	zassert_true(bt_rpa_irk_matches(new_irk, &new_rpa.a),
+	zassert_true(bt_addr_matches_irk(&new_rpa.a, new_irk),
 		     "The refreshed cached RPA does not match the new IRK");
-	zassert_false(bt_rpa_irk_matches(old_irk, &new_rpa.a),
+	zassert_false(bt_addr_matches_irk(&new_rpa.a, old_irk),
 		      "The refreshed cached RPA still matches the old IRK");
 	zassert_false(bt_addr_le_eq(&old_rpa, &new_rpa),
 		      "The cached RPA did not change after the IRK reset");
@@ -973,6 +972,56 @@ static ZTEST(bt_id_public_api, test_nrpa_adv_rejects_conn_create_with_host_resol
 }
 #endif /* defined(CONFIG_BT_CENTRAL) && defined(CONFIG_BT_SMP) */
 #endif /* CONFIG_BT_BROADCASTER && (!CONFIG_BT_EXT_ADV || CONFIG_BT_EXT_ADV_LEGACY_SUPPORT) */
+
+#if defined(CONFIG_BT_OBSERVER) && !defined(CONFIG_BT_BROADCASTER) &&                              \
+	defined(CONFIG_BT_RPA_TIMEOUT_DYNAMIC)
+/* Scan through one expiry of the RPA timeout. Report whether
+ * rpa_timeout() started the RPA timer again.
+ */
+static int scan_through_rpa_timeout(const struct bt_le_scan_param *param, uint16_t rpa_timeout_s,
+				    bool *pending)
+{
+	int err;
+
+	err = bt_le_scan_start(param, NULL);
+	if (err != 0) {
+		return err;
+	}
+
+	/* Wait half a second past the RPA timeout: rpa_timeout() has run,
+	 * and the next expiry is still ahead.
+	 */
+	(void)k_sleep(K_MSEC(rpa_timeout_s * MSEC_PER_SEC + 500U));
+	*pending = k_work_delayable_is_pending(&bt_dev.rpa_update);
+
+	return bt_le_scan_stop();
+}
+
+static ZTEST(bt_id_public_api, test_rpa_timer_stops_without_active_scanner)
+{
+	const uint16_t rpa_timeout_s = 1U;
+	struct bt_le_oob oob;
+	bool passive_pending = false;
+	bool active_pending = false;
+	int passive_err;
+	int active_err;
+
+	zassert_ok(bt_le_set_rpa_timeout(rpa_timeout_s), "Failed to set the RPA timeout");
+	/* Start a new RPA period, which uses the new timeout */
+	zassert_ok(bt_le_oob_get_local(BT_ID_DEFAULT, &oob), "Failed to get the local address");
+
+	passive_err = scan_through_rpa_timeout(BT_LE_SCAN_PASSIVE, rpa_timeout_s, &passive_pending);
+	active_err = scan_through_rpa_timeout(BT_LE_SCAN_ACTIVE, rpa_timeout_s, &active_pending);
+
+	zassert_ok(bt_le_set_rpa_timeout(CONFIG_BT_RPA_TIMEOUT),
+		   "Failed to restore the RPA timeout");
+
+	zassert_ok(passive_err, "Passive scanning failed: %d", passive_err);
+	zassert_ok(active_err, "Active scanning failed: %d", active_err);
+	zassert_false(passive_pending, "The RPA timer kept running for a passive scanner");
+	zassert_true(active_pending, "The RPA timer stopped for an active scanner");
+}
+#endif /* CONFIG_BT_OBSERVER && !CONFIG_BT_BROADCASTER && CONFIG_BT_RPA_TIMEOUT_DYNAMIC */
 #endif /* defined(CONFIG_BT_PRIVACY) */
 
 /* The public identity address reaches the driver through the common driver

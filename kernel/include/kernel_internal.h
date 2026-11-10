@@ -133,12 +133,9 @@ z_thread_return_value_set_with_data(struct k_thread *thread,
 	thread->base.swap_data = data;
 }
 
-#ifdef CONFIG_SMP
-extern void z_smp_init(void);
-#ifdef CONFIG_SYS_CLOCK_EXISTS
+#if defined(CONFIG_SMP) && defined(CONFIG_SYS_CLOCK_EXISTS)
 extern void smp_timer_init(void);
-#endif /* CONFIG_SYS_CLOCK_EXISTS */
-#endif /* CONFIG_SMP */
+#endif /* CONFIG_SMP && CONFIG_SYS_CLOCK_EXISTS */
 
 extern void z_early_rand_get(uint8_t *buf, size_t length);
 
@@ -165,8 +162,10 @@ int z_stack_space_get(const uint8_t *stack_start, size_t size, size_t *unused_pt
 #ifdef CONFIG_USERSPACE
 bool z_stack_is_user_capable(k_thread_stack_t *stack);
 
-/* Memory domain setup hook, called from z_setup_new_thread() */
-void z_mem_domain_init_thread(struct k_thread *thread);
+/* Memory domain setup hook, called from z_setup_new_thread(): make the new
+ * thread a member of the memory domain its parent is in.
+ */
+void z_mem_domain_init_thread(struct k_thread *thread, struct k_thread *parent);
 
 /* Memory domain teardown hook, called from z_thread_abort() */
 void z_mem_domain_exit_thread(struct k_thread *thread);

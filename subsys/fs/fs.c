@@ -183,7 +183,10 @@ int fs_open(struct fs_file_t *zfp, const char *file_name, fs_mode_t flags)
 	zfp->mp = mp;
 	rc = mp->fs->open(zfp, file_name, flags);
 	if (rc < 0) {
-		LOG_ERR("file open error (%d)", rc);
+		/* A file that doesn't exist is a valid open response, as for fs_stat() */
+		if (rc != -ENOENT) {
+			LOG_ERR("file open error (%d)", rc);
+		}
 		zfp->mp = NULL;
 		return rc;
 	}
@@ -365,6 +368,7 @@ int fs_opendir(struct fs_dir_t *zdp, const char *abs_path)
 {
 	struct fs_mount_t *mp;
 	int rc = -EINVAL;
+	size_t match_len = 0;
 
 	if ((abs_path == NULL) || (abs_path[0] != '/')) {
 		LOG_ERR("invalid directory name!!");
@@ -376,8 +380,11 @@ int fs_opendir(struct fs_dir_t *zdp, const char *abs_path)
 	}
 
 
-	if (strcmp(abs_path, "/") == 0) {
-		/* Open VFS root dir, marked by zdp->mp == NULL */
+	if ((strcmp(abs_path, "/") == 0) &&
+	    ((fs_get_mnt_point(&mp, abs_path, &match_len) < 0) || (match_len != 1))) {
+		/* Nothing is mounted at the root itself: open the virtual VFS
+		 * root dir that lists mount points, marked by zdp->mp == NULL
+		 */
 		k_mutex_lock(&mutex, K_FOREVER);
 
 		zdp->mp = NULL;

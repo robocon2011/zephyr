@@ -13,10 +13,11 @@
 
 LOG_MODULE_REGISTER(video_controls, CONFIG_VIDEO_LOG_LEVEL);
 
-/* By definition, the cluster is in manual mode if the primary control value is 0 */
+/* The cluster is in manual mode if the primary control holds the value given at clustering */
 static inline bool is_cluster_manual(const struct video_ctrl *primary)
 {
-	return primary->type == VIDEO_CTRL_TYPE_INTEGER64 ? primary->val64 == 0 : primary->val == 0;
+	return primary->type == VIDEO_CTRL_TYPE_INTEGER64 ? primary->val64 == primary->manual_val
+							  : primary->val == primary->manual_val;
 }
 
 int video_cluster_ctrl(struct video_ctrl *ctrls, uint8_t sz)
@@ -40,7 +41,8 @@ int video_cluster_ctrl(struct video_ctrl *ctrls, uint8_t sz)
 	return 0;
 }
 
-int video_auto_cluster_ctrl(struct video_ctrl *ctrls, uint8_t sz, bool set_volatile)
+int video_auto_cluster_ctrl(struct video_ctrl *ctrls, uint8_t sz, int32_t manual_val,
+			    bool set_volatile)
 {
 	int ret;
 
@@ -55,6 +57,7 @@ int video_auto_cluster_ctrl(struct video_ctrl *ctrls, uint8_t sz, bool set_volat
 	}
 
 	ctrls->is_auto = true;
+	ctrls->manual_val = manual_val;
 	ctrls->has_volatiles = set_volatile;
 	ctrls->flags |= VIDEO_CTRL_FLAG_UPDATE;
 
@@ -258,8 +261,6 @@ static inline const char *video_get_ctrl_name(uint32_t id)
 		return "Gain, Automatic";
 	case VIDEO_CID_GAIN:
 		return "Gain";
-	case VIDEO_CID_ANALOGUE_GAIN:
-		return "Analogue Gain";
 	case VIDEO_CID_HFLIP:
 		return "Horizontal Flip";
 	case VIDEO_CID_VFLIP:
@@ -330,6 +331,14 @@ static inline const char *video_get_ctrl_name(uint32_t id)
 	/* JPEG encoder controls */
 	case VIDEO_CID_JPEG_COMPRESSION_QUALITY:
 		return "Compression Quality";
+
+	/* Image source controls */
+	case VIDEO_CID_VBLANK:
+		return "Vertical Blanking";
+	case VIDEO_CID_HBLANK:
+		return "Horizontal Blanking";
+	case VIDEO_CID_ANALOGUE_GAIN:
+		return "Analogue Gain";
 
 	/* Image processing controls */
 	case VIDEO_CID_PIXEL_RATE:

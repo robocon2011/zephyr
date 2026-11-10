@@ -124,6 +124,8 @@ static enum test_case_no {
 	TEST_ADVERTISED_RECV_WINDOW = 23,
 	TEST_TCP_PKT_LINEARIZE_FRAG_CHAIN = 24,
 	TEST_SERVER_MSS_AFTER_OPTIONS = 25,
+	TEST_SERVER_ACK_AT_WINDOW_EDGE = 26,
+	TEST_SERVER_SYN_ACK_RESEND = 27,
 } test_case_no;
 
 static enum test_state t_state;
@@ -135,7 +137,8 @@ static int tester_send(const struct device *dev, struct net_pkt *pkt);
 
 static void handle_client_test(net_sa_family_t af, struct tcphdr *th);
 static void handle_server_test(net_sa_family_t af, struct tcphdr *th);
-static void handle_syn_resend(void);
+static void handle_syn_resend(struct net_pkt *pkt, struct tcphdr *th);
+static void handle_syn_ack_resend(struct net_pkt *pkt, struct tcphdr *th);
 static void handle_advertised_recv_window(struct tcphdr *th);
 static void handle_syn_rst_ack(net_sa_family_t af, struct tcphdr *th);
 static void handle_client_fin_wait_2_test(net_sa_family_t af, struct tcphdr *th);
@@ -153,6 +156,7 @@ static void handle_client_fin_ack_with_data_test(net_sa_family_t af, struct tcph
 static void handle_client_seq_validation_test(net_sa_family_t af, struct tcphdr *th);
 static void handle_server_ack_validation_test(struct net_pkt *pkt);
 static void handle_server_fin_ack_after_data_test(net_sa_family_t af, struct tcphdr *th);
+static void handle_server_ack_at_window_edge_test(struct tcphdr *th);
 
 static void verify_flags(struct tcphdr *th, uint8_t flags,
 			 const char *fun, int line)
@@ -213,7 +217,7 @@ static void net_tcp_iface_init(struct net_if *iface)
 
 struct net_tcp_context net_tcp_context_data;
 
-static struct dummy_api net_tcp_if_api = {
+static const struct dummy_api net_tcp_if_api = {
 	.iface_api.init = net_tcp_iface_init,
 	.send = tester_send,
 };
@@ -269,6 +273,7 @@ static uint8_t tester_options(uint8_t flags, const uint8_t **opts)
 {
 	switch (test_case_no) {
 	case TEST_SERVER_WITH_OPTIONS_IPV4:
+	case TEST_SERVER_SYN_ACK_RESEND:
 		if ((flags & SYN) != 0) {
 			*opts = tcp_options;
 			return sizeof(tcp_options);
@@ -475,10 +480,12 @@ fail:
 
 /*
  * Walk the option list of a received segment. Reports whether SACK permitted
- * was offered, and the edges of the first SACK block if one is present.
+ * was offered, the MSS if one is present (0 otherwise), and the edges of the
+ * first SACK block if one is present.
  */
 static int read_tcp_options(struct net_pkt *pkt, struct tcphdr *th,
-			    bool *sack_perm, uint32_t *left, uint32_t *right)
+			    bool *sack_perm, uint16_t *mss,
+			    uint32_t *left, uint32_t *right)
 {
 	uint8_t opts[40];
 	size_t len = (th->th_off - 5) * 4;
@@ -486,6 +493,9 @@ static int read_tcp_options(struct net_pkt *pkt, struct tcphdr *th,
 	int ret;
 
 	*sack_perm = false;
+	if (mss != NULL) {
+		*mss = 0;
+	}
 	if (left != NULL) {
 		*left = 0;
 		*right = 0;
@@ -539,6 +549,10 @@ static int read_tcp_options(struct net_pkt *pkt, struct tcphdr *th,
 
 		if (kind == NET_TCP_SACK_PERM_OPT && opt_len == 2) {
 			*sack_perm = true;
+		} else if (kind == NET_TCP_MSS_OPT && mss != NULL &&
+			   opt_len == NET_TCP_MSS_SIZE) {
+			*mss = net_ntohs(UNALIGNED_GET(
+				(uint16_t *)&opts[i + 2]));
 		} else if (kind == NET_TCP_SACK_OPT && left != NULL &&
 			   opt_len >= 2 + 8) {
 			*left = net_ntohl(UNALIGNED_GET(
@@ -618,7 +632,7 @@ static int tester_send(const struct device *dev, struct net_pkt *pkt)
 			bool sack_perm;
 
 			zassert_ok(read_tcp_options(pkt, &th, &sack_perm,
-						    NULL, NULL),
+						    NULL, NULL, NULL),
 				   "Cannot read TCP options");
 			/* SACK is offered only when enabled, which needs
 			 * the receive queue to hold data out of order.
@@ -635,7 +649,7 @@ static int tester_send(const struct device *dev, struct net_pkt *pkt)
 			bool sack_perm;
 
 			zassert_ok(read_tcp_options(pkt, &th, &sack_perm,
-						    NULL, NULL),
+						    NULL, NULL, NULL),
 				   "Cannot read TCP options");
 			/* The peer offered SACK; it is offered back only
 			 * when enabled here.
@@ -653,7 +667,10 @@ static int tester_send(const struct device *dev, struct net_pkt *pkt)
 		handle_server_test(net_pkt_family(pkt), &th);
 		break;
 	case TEST_CLIENT_SYN_RESEND:
-		handle_syn_resend();
+		handle_syn_resend(pkt, &th);
+		break;
+	case TEST_SERVER_SYN_ACK_RESEND:
+		handle_syn_ack_resend(pkt, &th);
 		break;
 	case TEST_ADVERTISED_RECV_WINDOW:
 		handle_advertised_recv_window(&th);
@@ -705,6 +722,9 @@ static int tester_send(const struct device *dev, struct net_pkt *pkt)
 		break;
 	case TEST_SERVER_FIN_ACK_AFTER_DATA:
 		handle_server_fin_ack_after_data_test(net_pkt_family(pkt), &th);
+		break;
+	case TEST_SERVER_ACK_AT_WINDOW_EDGE:
+		handle_server_ack_at_window_edge_test(&th);
 		break;
 	case TEST_TCP_PKT_LINEARIZE_FRAG_CHAIN:
 		/* Ignore RST/response TX while exercising tcp_pkt_linearize(). */
@@ -985,6 +1005,7 @@ static void test_server_timeout(struct k_work *work)
 	if (test_case_no == TEST_SERVER_IPV4 ||
 	    test_case_no == TEST_SERVER_WITH_OPTIONS_IPV4 ||
 	    test_case_no == TEST_SERVER_MSS_AFTER_OPTIONS ||
+	    test_case_no == TEST_SERVER_SYN_ACK_RESEND ||
 	    test_case_no == TEST_SERVER_RST_ON_CLOSED_PORT ||
 	    test_case_no == TEST_SERVER_RST_ON_LISTENING_PORT_NO_ACTIVE_CONNECTION) {
 		handle_server_test(NET_AF_INET, NULL);
@@ -1321,11 +1342,32 @@ ZTEST(net_tcp, test_server_ipv6)
 	net_context_put(accepted_ctx);
 }
 
-static void handle_syn_resend(void)
+/* Every SYN and SYN-ACK, retransmissions included, has to carry the options
+ * of the handshake: the peer may only ever see the retransmitted one.
+ */
+static void verify_handshake_options(struct net_pkt *pkt, struct tcphdr *th,
+				     uint8_t times)
+{
+	bool sack_perm;
+	uint16_t mss;
+
+	zassert_ok(read_tcp_options(pkt, th, &sack_perm, &mss, NULL, NULL),
+		   "Cannot read TCP options");
+	zexpect_not_equal(mss, 0, "No MSS in handshake segment %u", times);
+	zexpect_equal(sack_perm, IS_ENABLED(CONFIG_NET_TCP_SACK),
+		      "SACK permitted in handshake segment %u does not match "
+		      "CONFIG_NET_TCP_SACK", times);
+}
+
+static void handle_syn_resend(struct net_pkt *pkt, struct tcphdr *th)
 {
 	static uint8_t syn_times;
 
+	test_verify_flags(th, SYN);
+
 	syn_times++;
+
+	verify_handshake_options(pkt, th, syn_times);
 
 	if (syn_times == 2) {
 		test_sem_give();
@@ -1363,6 +1405,73 @@ ZTEST(net_tcp, test_client_syn_resend)
 
 	/* test handler will release the sem once it receives SYN again */
 	test_sem_take(K_MSEC(500), __LINE__);
+
+	net_context_put(ctx);
+}
+
+static void handle_syn_ack_resend(struct net_pkt *pkt, struct tcphdr *th)
+{
+	static uint8_t syn_ack_times;
+	struct net_pkt *reply;
+
+	test_verify_flags(th, SYN | ACK);
+
+	syn_ack_times++;
+
+	verify_handshake_options(pkt, th, syn_ack_times);
+
+	if (syn_ack_times < 2) {
+		return;
+	}
+
+	/* Retransmission seen, drop the half-open connection. */
+	seq = 1U;
+	reply = prepare_rst_packet(NET_AF_INET, net_htons(MY_PORT),
+				   net_htons(PEER_PORT));
+	zassert_not_null(reply, "Failed to prepare RST packet");
+	zassert_ok(net_recv_data(net_iface, reply), "Failed to send RST");
+
+	test_sem_give();
+}
+
+/* Test case scenario IPv4
+ *   send SYN with MSS and SACK permitted,
+ *   expect SYN ACK,
+ *   do not ACK it,
+ *   expect the SYN ACK again, with the same options.
+ */
+ZTEST(net_tcp, test_server_syn_ack_resend)
+{
+	struct net_context *ctx;
+	int ret;
+
+	t_state = T_SYN;
+	test_case_no = TEST_SERVER_SYN_ACK_RESEND;
+	seq = ack = 0;
+
+	ret = net_context_get(NET_AF_INET, NET_SOCK_STREAM, NET_IPPROTO_TCP, &ctx);
+	zassert_equal(ret, 0, "Failed to get net_context");
+
+	net_context_ref(ctx);
+
+	ret = net_context_bind(ctx, (struct net_sockaddr *)&my_addr_s,
+			       sizeof(struct net_sockaddr_in));
+	zassert_equal(ret, 0, "Failed to bind net_context");
+
+	ret = net_context_listen(ctx, 1);
+	zassert_equal(ret, 0, "Failed to listen on net_context");
+
+	ret = net_context_accept(ctx, test_tcp_accept_cb, K_NO_WAIT, NULL);
+	zassert_equal(ret, 0, "Failed to set accept on net_context");
+
+	/* Trigger the peer to send SYN */
+	k_work_reschedule(&test_server, K_NO_WAIT);
+
+	/* handle_syn_ack_resend releases the semaphore on the second SYN ACK */
+	test_sem_take(K_MSEC(500), __LINE__);
+
+	/* Let the RST be processed */
+	k_msleep(50);
 
 	net_context_put(ctx);
 }
@@ -2418,7 +2527,7 @@ static void handle_server_recv_out_of_order(struct net_pkt *pkt)
 		bool sack_perm;
 		uint32_t left, right;
 
-		zassert_ok(read_tcp_options(pkt, &th, &sack_perm,
+		zassert_ok(read_tcp_options(pkt, &th, &sack_perm, NULL,
 					    &left, &right),
 			   "Cannot read TCP options");
 
@@ -3414,6 +3523,137 @@ ZTEST(net_tcp, test_server_ack_validation)
 	net_context_put(accepted_ctx);
 }
 
+static int edge_ack_replies;
+static struct net_context *edge_ctx;
+
+static void handle_server_ack_at_window_edge_test(struct tcphdr *th)
+{
+	/* Count the ACKs the server sends back. Its data segments,
+	 * including retransmissions, carry PSH.
+	 */
+	if (!FL(&th->th_flags, &, PSH)) {
+		edge_ack_replies++;
+	}
+}
+
+static void send_at_window_edge(struct tcp *conn, uint8_t flags)
+{
+	struct net_pkt *pkt;
+	uint32_t t_seq = seq;
+	int ret;
+
+	seq = conn->ack + conn->recv_win;
+	pkt = tester_prepare_tcp_pkt(NET_AF_INET6, net_htons(MY_PORT), net_htons(PEER_PORT), flags,
+				     NULL, 0);
+	seq = t_seq;
+	zassert_not_null(pkt, "Cannot create pkt");
+
+	ret = net_recv_data(net_iface, pkt);
+	zassert_true(ret == 0, "recv data failed (%d)", ret);
+
+	/* Let the receiving thread run */
+	k_msleep(50);
+}
+
+static void send_edge_test_byte(struct tcp *conn)
+{
+	int ret;
+
+	ret = net_context_send(accepted_ctx, lorem_ipsum, 1, NULL, K_NO_WAIT, NULL);
+	zassert_true(ret >= 0, "Failed to send data to peer %d", ret);
+
+	k_msleep(50);
+	zassert_equal(conn->unacked_len, 1, "Sent data is not outstanding");
+
+	/* The segments sent next acknowledge the outstanding byte */
+	ack++;
+}
+
+/* Called from the suite teardown, so that a failed assertion does not
+ * leave the connection open for the following tests.
+ */
+static void ack_at_window_edge_cleanup(void)
+{
+	struct net_pkt *rst;
+
+	if (edge_ctx == NULL) {
+		return;
+	}
+
+	/* Abort the connection, no need for the closing handshake */
+	rst = prepare_rst_packet(NET_AF_INET6, net_htons(MY_PORT), net_htons(PEER_PORT));
+	if (rst != NULL && net_recv_data(net_iface, rst) < 0) {
+		net_pkt_unref(rst);
+	}
+
+	/* Let the receiving thread run */
+	k_msleep(50);
+
+	net_context_put(edge_ctx);
+	net_context_put(accepted_ctx);
+	edge_ctx = NULL;
+}
+
+/* A peer that has sent the whole receive window sends its ACKs with
+ * SEG.SEQ == RCV.NXT + RCV.WND. A segment there without data must be
+ * processed if it is an ACK without SYN, FIN or RST, whatever other
+ * flags it has, and rejected otherwise.
+ */
+ZTEST(net_tcp, test_server_ack_at_window_edge)
+{
+	static const uint8_t rejected[] = {RST | ACK, SYN | ACK, FIN | ACK};
+	static const uint8_t accepted[] = {ACK, PSH | ACK, ECN | ACK};
+	struct tcp *conn;
+	int rsterr, replies;
+
+	k_sem_reset(&test_sem);
+
+	edge_ctx = create_server_socket(0, 0);
+	conn = accepted_ctx->tcp;
+
+	test_case_no = TEST_SERVER_ACK_AT_WINDOW_EDGE;
+	edge_ack_replies = 0;
+
+	send_edge_test_byte(conn);
+
+	ARRAY_FOR_EACH(rejected, i) {
+		rsterr = GET_STAT(net_iface, tcp.rsterr);
+		replies = edge_ack_replies;
+
+		send_at_window_edge(conn, rejected[i]);
+
+		zassert_equal(conn->state, TCP_ESTABLISHED,
+			      "Flags 0x%02x at the window edge changed the state", rejected[i]);
+		zassert_equal(conn->unacked_len, 1, "Flags 0x%02x at the window edge were accepted",
+			      rejected[i]);
+
+		if (rejected[i] & RST) {
+			zassert_equal(GET_STAT(net_iface, tcp.rsterr), rsterr + 1,
+				      "RST at the window edge was not dropped");
+		} else {
+			zassert_equal(edge_ack_replies, replies + 1,
+				      "Flags 0x%02x at the window edge got no ACK", rejected[i]);
+		}
+	}
+
+	ARRAY_FOR_EACH(accepted, i) {
+		if (i > 0) {
+			send_edge_test_byte(conn);
+		}
+
+		replies = edge_ack_replies;
+
+		send_at_window_edge(conn, accepted[i]);
+
+		zassert_equal(conn->unacked_len, 0,
+			      "Flags 0x%02x at the window edge did not acknowledge the data",
+			      accepted[i]);
+		zassert_equal(edge_ack_replies, replies,
+			      "Flags 0x%02x at the window edge were answered as unacceptable",
+			      accepted[i]);
+	}
+}
+
 #define TEST_FIN_ACK_AFTER_DATA_REQ "request"
 #define TEST_FIN_ACK_AFTER_DATA_RSP "test data response"
 
@@ -3837,6 +4077,7 @@ static void net_tcp_after(void *fixture)
 	ARG_UNUSED(fixture);
 
 	tcp_send_cb = NULL;
+	ack_at_window_edge_cleanup();
 }
 
 ZTEST_SUITE(net_tcp, NULL, presetup, NULL, net_tcp_after, NULL);

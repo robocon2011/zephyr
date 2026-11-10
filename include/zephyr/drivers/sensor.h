@@ -1402,6 +1402,21 @@ static inline float sensor_value_to_float(const struct sensor_value *val)
 }
 
 /**
+ * @brief Helper function for converting struct sensor_value to q31.
+ *
+ * @param val A pointer to a sensor_value struct.
+ * @param shift The number of bits to right shift the input value.
+ * @return The converted value.
+ */
+static inline q31_t sensor_value_to_q31(const struct sensor_value *val, int8_t shift)
+{
+	int64_t whole = (int64_t)val->val1 * (INT64_C(1) << 31);
+	int64_t frac = (((int64_t)val->val2) * (INT64_C(1) << 31)) / 1000000;
+
+	return (q31_t)CLAMP((whole + frac) >> shift, INT32_MIN, INT32_MAX);
+}
+
+/**
  * @brief Helper function for converting struct sensor_value to fixed-point.
  *
  * @param val A pointer to a fixed-point value in Qm.n format.
@@ -1806,10 +1821,6 @@ static inline int sensor_value_scale(const struct sensor_value *inp, int32_t sca
 }
 
 /**
- * @}
- */
-
-/**
  * @brief Get the decoder name for the current driver
  *
  * This function depends on @c DT_DRV_COMPAT being defined.
@@ -1844,6 +1855,10 @@ static inline int sensor_value_scale(const struct sensor_value *inp, int32_t sca
 #define SENSOR_DECODER_API_DT_DEFINE()                                                             \
 	COND_CODE_1(DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT), (), (static))                        \
 	const STRUCT_SECTION_ITERABLE(sensor_decoder_api, SENSOR_DECODER_NAME())
+
+/**
+ * @}
+ */
 
 #define Z_MAYBE_SENSOR_DECODER_DECLARE_INTERNAL_IDX(node_id, prop, idx)                            \
 	extern const struct sensor_decoder_api UTIL_CAT(                                           \

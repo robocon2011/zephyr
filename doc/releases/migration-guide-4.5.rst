@@ -7,8 +7,8 @@
 
 .. _migration_4.5:
 
-Migration guide to Zephyr v4.5.0 (Working Draft)
-################################################
+Migration guide to Zephyr v4.5.0
+################################
 
 This document describes the changes required when migrating your application from Zephyr v4.4.0 to
 Zephyr v4.5.0.
@@ -177,6 +177,11 @@ Kernel
   header are removed. Code that walked the tracking lists must use
   :c:func:`k_obj_type_walk_locked` or :c:func:`k_obj_type_walk_unlocked` with
   the object type found by :c:func:`k_obj_type_find`.
+
+* The type of the expected value parameter for :c:func:`k_futex_wait` is now
+  ``atomic_val_t`` instead of ``int`` to match the type of the value stored
+  internally by :c:struct:`k_futex`. Callers might have to add an explicit
+  cast if the compiler does not implicitly cast the value.
 
 Boards
 ******
@@ -1725,6 +1730,12 @@ Serial
   driver, which now provides support for the Broadcom BCM283x auxiliary UART through vendor-specific
   extensions. (:github:`115112`)
 
+* The ``ambiq,pl011-uart`` devicetree binding and the Ambiq support in the PL011 serial driver have
+  been removed. Apollo2, Apollo3 and Apollo3 Blue Plus UART nodes now use the
+  :dtcompatible:`ambiq,uart` compatible, which is handled by the Ambiq UART driver. Out-of-tree
+  boards and SoCs that use ``ambiq,pl011-uart`` must switch to :dtcompatible:`ambiq,uart`.
+  (:github:`121456`)
+
 * :kconfig:option:`CONFIG_UART_NS16550_DW8250_DW_APB` now follows devicetree: it is
   enabled for :dtcompatible:`snps,dw-apb-uart` nodes and cannot be set otherwise. Add that
   compatible to the UART nodes instead of setting the option in Kconfig. (:github:`120368`)
@@ -3170,6 +3181,17 @@ RTIO
   handles kept in arrays, fall outside what the patch can bind and must be updated by hand;
   ``MODE=report`` flags the remaining ``rtio_sqe_cancel()`` call sites and any leftover
   ``RTIO_SQE_CANCELED`` uses, including writes, which have no mechanical rewrite.
+
+* A canceled submission now produces a completion queue event, where cancellation used to be
+  silent. A thread waiting in :c:func:`rtio_submit` for a submission that is then canceled is
+  released instead of waiting forever. :c:macro:`RTIO_SQE_NO_RESPONSE` is the only thing that
+  suppresses the completion, for a canceled submission as for one that runs.
+
+  Cancellation is best effort. A submission that is running or about to run may beat the
+  cancellation and complete with the result its iodev produced. One that is stopped completes
+  with ``-ECANCELED``, and cascades along a chain the way a failure does, so each submission
+  behind it also reports ``-ECANCELED``. Consumers that drain a fixed number of completions, or
+  that treat any completion as data, need to expect the extra events and read ``cqe->result``.
 
 Secure Storage
 ==============
